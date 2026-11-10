@@ -10,8 +10,8 @@
       JSON = {"o": [위도, 경도, 이름] | null, "s": [[위도, 경도, 이름], ...], "t": "기준 시각"}
       o = 출발·복귀 지점(사무실), s = 방문 순서대로의 국소
     경로 선: OSRM 공개 서버(도로 경로). 실패하면 직선거리·시속 40km로 대신 그린다.
-    길찾기 연동: 카카오맵·T맵 모두 출발·도착 포함 최대 7곳.
-      국소가 5곳 이하면 사무실로 복귀, 넘으면 연동 가능한 마지막 국소가 도착지.
+    길찾기 연동(휴대폰에서 확인한 값): 출발·도착 포함 카카오맵 최대 7곳, T맵 최대 4곳(경유 2곳).
+      앱별로 국소가 다 들어가면 사무실로 복귀, 넘으면 연동 가능한 마지막 국소가 도착지.
     공개 저장소에도 그대로 올리는 파일이므로 내부 이름·주소를 적지 않는다.
   -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -59,7 +59,8 @@
   </div>
   <script>
     (() => {
-      const LINK_MAX_POINTS = 7; // 카카오·T맵 연동 최대 지점 수(출발·도착 포함)
+      const KAKAO_MAX_POINTS = 7; // 카카오맵 연동 최대 지점 수(출발·도착 포함)
+      const TMAP_MAX_POINTS = 4; // T맵 연동 최대 지점 수(출발·경유 2·도착)
       const OSRM_TIMEOUT_MS = 8000;
       const FALLBACK_SPEED_KMH = 40;
 
@@ -145,9 +146,9 @@
       }
 
       // 길찾기 연동 지점: 출발(사무실) + 국소. 들어가면 사무실 복귀, 넘치면 연동 가능한 마지막 국소가 도착지.
-      function navPoints(office, stops) {
+      function navPoints(office, stops, maxPoints) {
         const start = office ? [office] : [];
-        const room = LINK_MAX_POINTS - start.length;
+        const room = maxPoints - start.length;
         if (office && stops.length <= room - 1) return { points: [office, ...stops, office], cut: 0 };
         const used = stops.slice(0, room);
         return { points: [...start, ...used], cut: stops.length - used.length };
@@ -272,12 +273,15 @@
 
         function updateNav() {
           const chosen = stops.filter((_stop, index) => selected[index]);
-          const { points, cut } = navPoints(office, chosen);
-          const usable = points.length >= 2;
-          setLink(kakaoButton, usable ? kakaoUrl(points) : "");
-          setLink(tmapButton, usable ? tmapUrl(points) : "");
-          const lines = [`카카오맵·T맵 길찾기는 출발·도착 포함 최대 ${LINK_MAX_POINTS}곳까지 연동됩니다.`];
-          if (cut > 0) lines.push(`이후 ${cut}곳은 연동되지 않으니, 도착 후 다시 길찾기를 해 주세요.`);
+          const kakao = navPoints(office, chosen, KAKAO_MAX_POINTS);
+          const tmap = navPoints(office, chosen, TMAP_MAX_POINTS);
+          setLink(kakaoButton, kakao.points.length >= 2 ? kakaoUrl(kakao.points) : "");
+          setLink(tmapButton, tmap.points.length >= 2 ? tmapUrl(tmap.points) : "");
+          const lines = [`출발·도착 포함 카카오맵은 최대 ${KAKAO_MAX_POINTS}곳, T맵은 최대 ${TMAP_MAX_POINTS}곳까지 연동됩니다.`];
+          const cuts = [];
+          if (kakao.cut > 0) cuts.push(`카카오맵 ${kakao.cut}곳`);
+          if (tmap.cut > 0) cuts.push(`T맵 ${tmap.cut}곳`);
+          if (cuts.length) lines.push(`연동되지 않은 국소(${cuts.join(", ")})는 도착 후 다시 길찾기를 해 주세요.`);
           if (navMode) lines.push(`네비 모드: 번호 핀을 눌러 선택·해제하세요. 선택 ${chosen.length}곳`);
           note.textContent = lines.join(" ");
         }
