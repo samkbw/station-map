@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>경로 지도</title>
+  <!--
+    경로 지도 페이지. 받은 순서대로 번호 핀을 찍고 경로를 그린다.
+    데이터: #r1=<base64url(JSON)>  (서버로 전송되지 않음)
+      JSON = {"o": [위도, 경도, 이름] | null, "s": [[위도, 경도, 이름], ...], "t": "기준 시각"}
+      o = 출발·복귀 지점(사무실), s = 방문 순서대로의 국소
+    경로 선: OSRM 공개 서버(도로 경로). 실패하면 직선거리·시속 40km로 대신 그린다.
+    길찾기 연동: 카카오맵·T맵 모두 출발·도착 포함 최대 7곳.
+      국소가 5곳 이하면 사무실로 복귀, 넘으면 연동 가능한 마지막 국소가 도착지.
+    공개 저장소에도 그대로 올리는 파일이므로 내부 이름·주소를 적지 않는다.
+  -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+  <style>
+    html, body { height: 100%; margin: 0; background: #fff; font-family: sans-serif; }
+    body { display: flex; flex-direction: column; }
+    #map { position: relative; flex: 1; min-height: 0; }
+    #summary { position: absolute; z-index: 1000; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 120px); padding: 6px 12px; border-radius: 8px; background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(15,23,42,.18); color: #1f2a44; font-size: 12px; font-weight: 700; text-align: center; }
+    .leaflet-control-attribution { font-size: 9px; }
+    .map-layer-switch { display: flex; flex-direction: column; width: 34px; gap: 4px; background: transparent; }
+    .leaflet-touch .map-layer-switch { border: 0; }
+    .map-layer-btn { border: 1px solid rgba(0,0,0,.2); border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,.18); background: #fff; color: #374665; font-size: 9.5px; font-weight: 700; padding: 4px 2px; cursor: pointer; line-height: 1.2; text-align: center; }
+    .map-layer-btn.is-active { background: #3f57d5; color: #fff; }
+    /* 번호 핀 (웹과 같은 모양) */
+    .route-map-pin { display: grid; width: 26px; height: 26px; box-sizing: border-box; place-items: center; border: 2px solid #fff; border-radius: 50%; color: #fff; background: #16a34a; box-shadow: 0 4px 12px rgba(15,23,42,.3); font-size: 10px; font-weight: 900; }
+    .route-map-pin.is-office { background: #0f172a; }
+    .route-map-pin.is-off { background: #cbd5e1; color: #475569; }
+    /* 하단 버튼 */
+    #panel { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #e5eaf3; background: #fff; }
+    .panel-row { display: flex; gap: 8px; }
+    .panel-row + .panel-row { margin-top: 8px; }
+    .panel-btn { flex: 1; padding: 11px 6px; border: 0; border-radius: 10px; font-size: 14px; font-weight: 800; text-align: center; text-decoration: none; cursor: pointer; }
+    .panel-btn.is-kakao { background: #fee500; color: #191919; }
+    .panel-btn.is-tmap { background: #ef3e42; color: #fff; }
+    .panel-btn.is-nav { background: #eef2ff; color: #3f57d5; }
+    .panel-btn.is-nav.is-on { background: #3f57d5; color: #fff; }
+    .panel-btn[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+    #panel-note { margin-top: 8px; color: #6b7895; font-size: 11.5px; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <div id="map"><div id="summary">경로를 불러오는 중…</div></div>
+  <div id="panel">
+    <div class="panel-row">
+      <a id="btn-kakao" class="panel-btn is-kakao" target="_blank" rel="noopener noreferrer">카카오맵 길찾기</a>
+      <a id="btn-tmap" class="panel-btn is-tmap" rel="noopener noreferrer">T맵 길찾기</a>
+    </div>
+    <div class="panel-row">
+      <button id="btn-nav" class="panel-btn is-nav" type="button">네비 모드: 꺼짐</button>
+    </div>
+    <div id="panel-note"></div>
+  </div>
+  <script>
+    (() => {
+      const LINK_MAX_POINTS = 7; // 카카오·T맵 연동 최대 지점 수(출발·도착 포함)
+      const OSRM_TIMEOUT_MS = 8000;
+      const FALLBACK_SPEED_KMH = 40;
+
+      const summary = document.getElementById("summary");
+      const note = document.getElementById("panel-note");
+      const kakaoButton = document.getElementById("btn-kakao");
+      const tmapButton = document.getElementById("btn-tmap");
+      const navButton = document.getElementById("btn-nav");
+
+      function textOf(value) {
+        return value === null || value === undefined ? "" : String(value).trim();
+      }
+
+      function validPoint(row) {
+        if (!Array.isArray(row)) return null;
+        const lat = Number(row[0]);
+        const lon = Number(row[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+        return { lat, lon, name: textOf(row[2]) || `${lat.toFixed(5)}, ${lon.toFixed(5)}` };
+      }
+
+      // #r1=base64url(JSON). 형식이 틀리면 null.
+      function parseData(hash) {
+        const body = hash.replace(/^#/, "");
+        if (!body.startsWith("r1=")) return null;
+        try {
+          const base64 = body.slice(3).replace(/-/g, "+").replace(/_/g, "/");
+          const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
+          const data = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0))));
+          const stops = (Array.isArray(data.s) ? data.s : []).map(validPoint).filter(Boolean);
+          return { office: validPoint(data.o), stops, time: textOf(data.t) };
+        } catch (error) {
+          console.error("[ROUTE] data parse failed", error);
+          return null;
+        }
+      }
+
+      function haversineKm(a, b) {
+        const rad = (x) => (x * Math.PI) / 180;
+        const dLat = rad(b.lat - a.lat);
+        const dLon = rad(b.lon - a.lon);
+        const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+        return 2 * 6371 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+      }
+
+      // OSRM 실패 시: 직선거리·시속 40km(구간 최소 1분). 웹과 같은 계산.
+      function fallbackRoute(points) {
+        let distance = 0;
+        let duration = 0;
+        for (let index = 1; index < points.length; index += 1) {
+          const km = haversineKm(points[index - 1], points[index]);
+          distance += km * 1000;
+          duration += Math.max(60, Math.round((km / FALLBACK_SPEED_KMH) * 3600));
+        }
+        return { coordinates: points.map((p) => [p.lat, p.lon]), distance, duration, fallback: true };
+      }
+
+      async function fetchRoute(points) {
+        if (points.length < 2) return fallbackRoute(points);
+        const coords = points.map((p) => `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`).join(";");
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), OSRM_TIMEOUT_MS);
+        try {
+          const response = await fetch(
+            `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=false`,
+            { signal: controller.signal },
+          );
+          if (!response.ok) return fallbackRoute(points);
+          const route = (await response.json())?.routes?.[0];
+          if (!route) return fallbackRoute(points);
+          return {
+            coordinates: (route.geometry?.coordinates || []).map(([lon, lat]) => [lat, lon]),
+            distance: Number(route.distance || 0),
+            duration: Number(route.duration || 0),
+            fallback: false,
+          };
+        } catch (error) {
+          console.warn("[ROUTE] OSRM load failed; fallback route used", error?.name || error);
+          return fallbackRoute(points);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      // 길찾기 연동 지점: 출발(사무실) + 국소. 들어가면 사무실 복귀, 넘치면 연동 가능한 마지막 국소가 도착지.
+      function navPoints(office, stops) {
+        const start = office ? [office] : [];
+        const room = LINK_MAX_POINTS - start.length;
+        if (office && stops.length <= room - 1) return { points: [office, ...stops, office], cut: 0 };
+        const used = stops.slice(0, room);
+        return { points: [...start, ...used], cut: stops.length - used.length };
+      }
+
+      function safeName(name) {
+        return name.replace(/[,/]/g, " ");
+      }
+
+      function kakaoUrl(points) {
+        const parts = points.map((p) => `${encodeURIComponent(safeName(p.name))},${p.lat},${p.lon}`);
+        return `https://map.kakao.com/link/by/car/${parts.join("/")}`;
+      }
+
+      function tmapUrl(points) {
+        const goal = points[points.length - 1];
+        const params = new URLSearchParams({ rGoName: goal.name, rGoX: String(goal.lon), rGoY: String(goal.lat) });
+        if (points.length > 1) {
+          params.set("rStName", points[0].name);
+          params.set("rStX", String(points[0].lon));
+          params.set("rStY", String(points[0].lat));
+        }
+        points.slice(1, -1).forEach((p, index) => {
+          params.set(`rV${index + 1}Name`, p.name);
+          params.set(`rV${index + 1}X`, String(p.lon));
+          params.set(`rV${index + 1}Y`, String(p.lat));
+        });
+        return `tmap://route?${params.toString()}`;
+      }
+
+      function setLink(button, url) {
+        if (url) {
+          button.href = url;
+          button.removeAttribute("aria-disabled");
+        } else {
+          button.removeAttribute("href");
+          button.setAttribute("aria-disabled", "true");
+        }
+      }
+
+      function minutesText(seconds) {
+        const total = Math.round(seconds / 60);
+        const hours = Math.floor(total / 60);
+        return hours ? `${hours}시간 ${total % 60}분` : `${total}분`;
+      }
+
+      function pinIcon(label, className) {
+        return L.divIcon({ className: "", html: `<div class="route-map-pin ${className}">${label}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+      }
+
+      function render() {
+        if (typeof L === "undefined") {
+          summary.textContent = "지도 라이브러리를 불러오지 못했습니다.";
+          return;
+        }
+        const map = L.map("map", { zoomControl: true }).setView([37.5665, 126.978], 11);
+        const normalLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19, subdomains: "abc",
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        }).addTo(map);
+        const satelliteLayers = [
+          L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            { maxZoom: 19, attribution: "Tiles &copy; Esri &mdash; Source: Esri and the GIS User Community" }),
+          L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+            { maxZoom: 19 }),
+        ];
+        const LayerSwitcher = L.Control.extend({
+          options: { position: "topleft" },
+          onAdd() {
+            const wrapper = L.DomUtil.create("div", "map-layer-switch leaflet-bar");
+            const sat = L.DomUtil.create("button", "map-layer-btn", wrapper);
+            const nor = L.DomUtil.create("button", "map-layer-btn is-active", wrapper);
+            sat.type = "button"; sat.textContent = "위성";
+            nor.type = "button"; nor.textContent = "일반";
+            L.DomEvent.disableClickPropagation(wrapper);
+            const setMode = (satellite) => {
+              if (satellite) { map.removeLayer(normalLayer); satelliteLayers.forEach((l) => map.addLayer(l)); }
+              else { satelliteLayers.forEach((l) => map.removeLayer(l)); map.addLayer(normalLayer); }
+              sat.classList.toggle("is-active", satellite);
+              nor.classList.toggle("is-active", !satellite);
+            };
+            sat.addEventListener("click", () => setMode(true));
+            nor.addEventListener("click", () => setMode(false));
+            return wrapper;
+          },
+        });
+        map.addControl(new LayerSwitcher());
+
+        const data = parseData(window.location.hash);
+        if (!data || !data.stops.length) {
+          summary.textContent = "표시할 경로가 없습니다.";
+          setLink(kakaoButton, ""); setLink(tmapButton, "");
+          navButton.disabled = true;
+          return;
+        }
+        const { office, stops } = data;
+        const selected = stops.map(() => true);
+        let navMode = false;
+        const markers = [];
+
+        if (office) {
+          L.marker([office.lat, office.lon], { icon: pinIcon("출", "is-office"), keyboard: false })
+            .bindPopup(document.createTextNode(`출발·복귀: ${office.name}`)).addTo(map);
+        }
+        stops.forEach((stop, index) => {
+          const marker = L.marker([stop.lat, stop.lon], { icon: pinIcon(String(index + 1), ""), keyboard: false }).addTo(map);
+          marker.bindPopup(document.createTextNode(`${index + 1}. ${stop.name}`));
+          marker.on("click", () => {
+            if (!navMode) return;
+            marker.closePopup();
+            selected[index] = !selected[index];
+            marker.setIcon(pinIcon(String(index + 1), selected[index] ? "" : "is-off"));
+            updateNav();
+          });
+          markers.push(marker);
+        });
+
+        const routePoints = office ? [office, ...stops, office] : stops;
+        map.fitBounds(routePoints.map((p) => [p.lat, p.lon]), { padding: [40, 40], maxZoom: 15 });
+
+        function updateNav() {
+          const chosen = stops.filter((_stop, index) => selected[index]);
+          const { points, cut } = navPoints(office, chosen);
+          const usable = points.length >= 2;
+          setLink(kakaoButton, usable ? kakaoUrl(points) : "");
+          setLink(tmapButton, usable ? tmapUrl(points) : "");
+          const lines = [`카카오맵·T맵 길찾기는 출발·도착 포함 최대 ${LINK_MAX_POINTS}곳까지 연동됩니다.`];
+          if (cut > 0) lines.push(`이후 ${cut}곳은 연동되지 않으니, 도착 후 다시 길찾기를 해 주세요.`);
+          if (navMode) lines.push(`네비 모드: 번호 핀을 눌러 선택·해제하세요. 선택 ${chosen.length}곳`);
+          note.textContent = lines.join(" ");
+        }
+
+        navButton.addEventListener("click", () => {
+          navMode = !navMode;
+          navButton.classList.toggle("is-on", navMode);
+          navButton.textContent = navMode ? "네비 모드: 켜짐 (핀을 눌러 선택·해제)" : "네비 모드: 꺼짐";
+          if (!navMode) {
+            selected.fill(true);
+            markers.forEach((marker, index) => marker.setIcon(pinIcon(String(index + 1), "")));
+          }
+          updateNav();
+        });
+        updateNav();
+
+        const timeText = data.time ? ` · ${data.time} 기준` : "";
+        summary.textContent = `동선 ${stops.length}곳${timeText} · 경로 계산 중…`;
+        fetchRoute(routePoints).then((route) => {
+          if (route.coordinates.length > 1) {
+            L.polyline(route.coordinates, { color: "#2563eb", weight: 5, opacity: 0.86 }).addTo(map);
+          }
+          const how = route.fallback ? "직선 추정" : "도로 기준";
+          summary.textContent = `동선 ${stops.length}곳${timeText} · ${(route.distance / 1000).toFixed(1)}km · ${minutesText(route.duration)} (${how})`;
+          console.info("[ROUTE] route drawn", { stops: stops.length, fallback: route.fallback });
+        });
+      }
+
+      render();
+    })();
+  </script>
+</body>
+</html>
