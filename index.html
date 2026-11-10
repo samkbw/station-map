@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>국소 지도</title>
+  <!--
+    국소 지도 페이지.
+    좌표는 주소의 # 뒤로 넘긴다(서버로 전송되지 않음).
+    형식: #위도,경도,이름;위도,경도,이름  (이름은 encodeURIComponent로 인코딩)
+    지도: Leaflet 1.9.4, OSM 일반 / Esri 위성, 물방울 핀.
+    공개 저장소에도 그대로 올리는 파일이므로 내부 이름·주소를 적지 않는다.
+  -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+  <style>
+    html, body { height: 100%; margin: 0; background: #fff; font-family: sans-serif; }
+    #map { position: absolute; inset: 0; }
+    #notice { position: absolute; z-index: 1000; top: 12px; left: 50%; transform: translateX(-50%); padding: 8px 14px; border-radius: 8px; background: rgba(15,23,42,.85); color: #fff; font-size: 13px; display: none; }
+    .leaflet-control-attribution { font-size: 9px; }
+    /* 위성/일반 전환 버튼 (웹과 같은 모양) */
+    .map-layer-switch { display: flex; flex-direction: column; width: 34px; gap: 4px; background: transparent; }
+    .leaflet-touch .map-layer-switch { border: 0; }
+    .map-layer-btn { border: 1px solid rgba(0,0,0,.2); border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,.18); background: #fff; color: #374665; font-size: 9.5px; font-weight: 700; padding: 4px 2px; cursor: pointer; line-height: 1.2; text-align: center; }
+    .map-layer-btn.is-active { background: #3f57d5; color: #fff; }
+    /* 물방울 핀 (웹과 같은 모양) */
+    .work-map-pin { position: relative; width: 24px; height: 24px; border: 2px solid rgba(255,255,255,.96); border-radius: 50% 50% 50% 0; background: #f59e0b; box-shadow: 0 3px 10px rgba(245,158,11,.34); transform: rotate(-45deg); }
+    .work-map-pin::after { position: absolute; top: 50%; left: 50%; width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,.96); content: ""; transform: translate(-50%,-50%); }
+    /* 팝업 */
+    .work-marker-popup .leaflet-popup-content-wrapper { border-radius: 16px; overflow: hidden; box-shadow: 0 18px 40px rgba(15,23,42,.22), 0 2px 8px rgba(15,23,42,.08); }
+    .popup-name { display: block; margin-bottom: 8px; font-size: 14px; color: #1f2937; }
+    .popup-route { display: inline-block; padding: 6px 12px; border-radius: 8px; background: #fee500; color: #191919; font-size: 13px; font-weight: 700; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="notice"></div>
+  <script>
+    (() => {
+      const DEFAULT_CENTER = [37.5665, 126.9780];
+      const DEFAULT_ZOOM = 11;
+      const MAX_MARKERS = 200;
+
+      function showNotice(message) {
+        const notice = document.getElementById("notice");
+        notice.textContent = message;
+        notice.style.display = "block";
+      }
+
+      // # 뒤 문자열을 [{lat, lon, name}] 으로 바꾼다. 형식이 틀린 항목은 건너뛰고 개수를 콘솔에 남긴다.
+      function parseStations(hash) {
+        const stations = [];
+        let skipped = 0;
+        hash.replace(/^#/, "").split(";").forEach((part) => {
+          if (!part) return;
+          const fields = part.split(",");
+          const lat = Number(fields[0]);
+          const lon = Number(fields[1]);
+          if (fields.length < 2 || !Number.isFinite(lat) || !Number.isFinite(lon)
+            || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+            skipped += 1;
+            return;
+          }
+          let name = "";
+          try {
+            name = decodeURIComponent(fields.slice(2).join(",")).trim();
+          } catch (error) {
+            skipped += 1;
+            return;
+          }
+          stations.push({ lat, lon, name: name || `${lat.toFixed(5)}, ${lon.toFixed(5)}` });
+        });
+        if (skipped) console.warn("[MAP] skipped invalid items", skipped);
+        return stations.slice(0, MAX_MARKERS);
+      }
+
+      // 카카오맵 길찾기 링크. 이름의 쉼표는 링크 구분자와 겹치므로 공백으로 바꾼다.
+      function kakaoRouteUrl(station) {
+        const name = encodeURIComponent(station.name.replace(/,/g, " "));
+        return `https://map.kakao.com/link/to/${name},${station.lat},${station.lon}`;
+      }
+
+      // 팝업 내용은 textContent 로만 넣는다(링크로 받은 이름을 HTML 로 해석하지 않음).
+      function buildPopup(station) {
+        const box = document.createElement("div");
+        const name = document.createElement("strong");
+        name.className = "popup-name";
+        name.textContent = station.name;
+        const route = document.createElement("a");
+        route.className = "popup-route";
+        route.href = kakaoRouteUrl(station);
+        route.target = "_blank";
+        route.rel = "noopener noreferrer";
+        route.textContent = "카카오맵 길찾기";
+        box.append(name, route);
+        return box;
+      }
+
+      function addLayerSwitcher(map, normalLayer, satelliteLayers) {
+        const LayerSwitcher = L.Control.extend({
+          options: { position: "topleft" },
+          onAdd() {
+            const wrapper = L.DomUtil.create("div", "map-layer-switch leaflet-bar");
+            const satelliteButton = L.DomUtil.create("button", "map-layer-btn", wrapper);
+            const normalButton = L.DomUtil.create("button", "map-layer-btn is-active", wrapper);
+            satelliteButton.type = "button";
+            satelliteButton.textContent = "위성";
+            normalButton.type = "button";
+            normalButton.textContent = "일반";
+            L.DomEvent.disableClickPropagation(wrapper);
+            const setMode = (satelliteMode) => {
+              if (satelliteMode) {
+                map.removeLayer(normalLayer);
+                satelliteLayers.forEach((layer) => map.addLayer(layer));
+              } else {
+                satelliteLayers.forEach((layer) => map.removeLayer(layer));
+                map.addLayer(normalLayer);
+              }
+              satelliteButton.classList.toggle("is-active", satelliteMode);
+              normalButton.classList.toggle("is-active", !satelliteMode);
+            };
+            satelliteButton.addEventListener("click", () => setMode(true));
+            normalButton.addEventListener("click", () => setMode(false));
+            return wrapper;
+          },
+        });
+        map.addControl(new LayerSwitcher());
+      }
+
+      function render() {
+        if (typeof L === "undefined") {
+          showNotice("지도 라이브러리를 불러오지 못했습니다.");
+          console.error("[MAP] Leaflet unavailable");
+          return;
+        }
+        const map = L.map("map", { zoomControl: true }).setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+        const normalLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          subdomains: "abc",
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        }).addTo(map);
+        const satelliteLayer = L.tileLayer(
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+          { maxZoom: 19, attribution: "Tiles &copy; Esri &mdash; Source: Esri and the GIS User Community" },
+        );
+        const satelliteLabelLayer = L.tileLayer(
+          "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+          { maxZoom: 19 },
+        );
+        normalLayer.once("tileerror", () => console.warn("[MAP] normal tile load failed"));
+        addLayerSwitcher(map, normalLayer, [satelliteLayer, satelliteLabelLayer]);
+
+        const stations = parseStations(window.location.hash);
+        console.info("[MAP] stations loaded", stations.length);
+        if (!stations.length) {
+          showNotice("표시할 국소가 없습니다.");
+          return;
+        }
+        const icon = L.divIcon({
+          className: "",
+          html: '<div class="work-map-pin"></div>',
+          iconSize: [28, 28],
+          iconAnchor: [12, 24],
+          popupAnchor: [0, -10],
+        });
+        const bounds = [];
+        stations.forEach((station) => {
+          L.marker([station.lat, station.lon], { icon, keyboard: false })
+            .bindPopup(buildPopup(station), { className: "work-marker-popup", minWidth: 160 })
+            .addTo(map);
+          bounds.push([station.lat, station.lon]);
+        });
+        if (bounds.length === 1) map.setView(bounds[0], 15);
+        else map.fitBounds(bounds, { padding: [32, 32], maxZoom: 15 });
+      }
+
+      render();
+    })();
+  </script>
+</body>
+</html>
