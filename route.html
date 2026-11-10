@@ -49,7 +49,7 @@
     :root { --primary: #3e6ee8; --muted: #6b7895; --text: #1f2a44; }
     .work-marker-popup .leaflet-popup-content-wrapper { padding: 0; border-radius: 16px; overflow: hidden; box-shadow: 0 18px 40px rgba(15,23,42,.22), 0 2px 8px rgba(15,23,42,.08); }
     .work-marker-popup .leaflet-popup-content { width: auto !important; margin: 0; }
-    .work-marker-popover { width: min(430px, 86vw); }
+    .work-marker-popover { width: min(430px, calc(100vw - 72px)); } /* 왼쪽 버튼 폭(56px)과 오른쪽 여백을 뺀 폭 */
     .work-marker-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 40px 12px 14px; border-bottom: 1px solid #eef1f7; background: linear-gradient(165deg, #f5f8ff, #fdfbff); }
     .work-marker-popover-heading strong { overflow: hidden; color: #1c2b4a; font-size: 12.5px; font-weight: 900; text-overflow: ellipsis; white-space: nowrap; }
     .work-marker-popover-heading span { flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; color: var(--primary); background: rgba(62,110,232,.1); font-size: 10.5px; font-weight: 800; }
@@ -355,7 +355,7 @@
           const marker = L.marker([stop.lat, stop.lon], { icon: pinIcon(String(index + 1), ""), keyboard: false }).addTo(map);
           marker.bindPopup(() => buildPopup(stop, index), {
             className: "work-marker-popup", maxWidth: 460, minWidth: 0,
-            autoPanPaddingTopLeft: L.point(10, 70), // 상단 안내 상자에 가리지 않게
+            autoPanPaddingTopLeft: L.point(56, 70), // 상단 안내 상자·왼쪽 확대/지도 전환 버튼에 가리지 않게
           });
           marker.on("click", () => {
             if (!navMode) return;
