@@ -36,6 +36,12 @@
     .route-map-pin.is-off { background: #cbd5e1; color: #475569; }
     /* 하단 버튼 */
     #panel { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #e5eaf3; background: #fff; }
+    /* 국소 팝업이 열리면 패널을 접고 손잡이만 남긴다(누르거나 위로 끌면 다시 펼침) */
+    #panel-handle { display: none; padding: 4px 0 10px; cursor: pointer; touch-action: none; }
+    #panel-handle span { display: block; width: 44px; height: 5px; margin: 0 auto; border-radius: 999px; background: #cbd5e1; }
+    #panel.is-collapsed { padding-top: 6px; padding-bottom: calc(4px + env(safe-area-inset-bottom)); }
+    #panel.is-collapsed #panel-handle { display: block; }
+    #panel.is-collapsed > :not(#panel-handle) { display: none; }
     .panel-row { display: flex; gap: 8px; }
     .panel-row + .panel-row { margin-top: 8px; }
     .panel-btn { flex: 1; padding: 11px 6px; border: 0; border-radius: 10px; font-size: 14px; font-weight: 800; text-align: center; text-decoration: none; cursor: pointer; }
@@ -80,6 +86,7 @@
 <body>
   <div id="map"><div id="summary">경로를 불러오는 중…</div></div>
   <div id="panel">
+    <div id="panel-handle" role="button" aria-label="전체 경로 버튼 다시 보기"><span></span></div>
     <div class="panel-row">
       <a id="btn-tmap" class="panel-btn is-tmap" rel="noopener noreferrer">T맵 전체 경로</a>
       <a id="btn-kakao" class="panel-btn is-kakao" target="_blank" rel="noopener noreferrer">카카오맵 전체 경로</a>
@@ -427,6 +434,33 @@
           updateNav();
         });
         updateNav();
+
+        // 국소 팝업이 열리면 하단 패널을 접고, 팝업이 닫히면 자동으로 펼친다.
+        // 다른 핀으로 바로 옮길 때는 닫힘·열림이 연달아 오므로 닫힘은 한 박자 늦게 보고 열린 팝업이 없을 때만 펼친다.
+        const panel = document.getElementById("panel");
+        const handle = document.getElementById("panel-handle");
+        let openPopup = null;
+        function setPanelCollapsed(collapsed) {
+          if (panel.classList.contains("is-collapsed") === collapsed) return;
+          panel.classList.toggle("is-collapsed", collapsed);
+          map.invalidateSize({ pan: false });
+        }
+        map.on("popupopen", (event) => {
+          openPopup = event.popup;
+          if (!navMode) setPanelCollapsed(true);
+        });
+        map.on("popupclose", (event) => {
+          if (openPopup === event.popup) openPopup = null;
+          setTimeout(() => { if (!openPopup) setPanelCollapsed(false); }, 0);
+        });
+        // 손잡이: 누르거나 위로 끌면 펼친다(팝업은 그대로 둔다).
+        let dragStartY = null;
+        handle.addEventListener("pointerdown", (event) => { dragStartY = event.clientY; });
+        handle.addEventListener("pointerup", (event) => {
+          const moved = dragStartY === null ? 0 : event.clientY - dragStartY;
+          dragStartY = null;
+          if (moved <= 10) setPanelCollapsed(false);
+        });
 
         summary.textContent = GUIDE_TEXT;
         fetchRoute(routePoints).then((route) => {
