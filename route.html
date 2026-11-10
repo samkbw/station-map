@@ -36,12 +36,23 @@
     .route-map-pin.is-off { background: #cbd5e1; color: #475569; }
     /* 하단 버튼 */
     #panel { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #e5eaf3; background: #fff; }
-    /* 국소 팝업이 열리면 패널을 접고 손잡이만 남긴다(누르거나 위로 끌면 다시 펼침) */
-    #panel-handle { display: none; padding: 4px 0 10px; cursor: pointer; touch-action: none; }
-    #panel-handle span { display: block; width: 44px; height: 5px; margin: 0 auto; border-radius: 999px; background: #cbd5e1; }
-    #panel.is-collapsed { padding-top: 6px; padding-bottom: calc(4px + env(safe-area-inset-bottom)); }
-    #panel.is-collapsed #panel-handle { display: block; }
-    #panel.is-collapsed > :not(#panel-handle) { display: none; }
+    /* 국소 팝업이 열리면 패널을 접고 손잡이만 남긴다(누르거나 위로 끌면 다시 펼침). 높이를 0.25초 동안 바꿔 스르륵 움직인다. */
+    #panel-handle, #panel-body { overflow: hidden; transition: max-height .25s ease, opacity .25s ease; }
+    #panel-handle { max-height: 0; opacity: 0; cursor: pointer; touch-action: none; }
+    #panel-handle span { display: block; width: 44px; height: 5px; margin: 2px auto 10px; border-radius: 999px; background: #cbd5e1; }
+    #panel-body { max-height: 360px; }
+    #panel.is-collapsed #panel-handle { max-height: 24px; opacity: 1; }
+    #panel.is-collapsed #panel-body { max-height: 0; opacity: 0; }
+    /* 내 위치 (카카오맵과 같은 모양: 빨간 점 + 흰 테두리, 바라보는 방향 삼각형) */
+    .my-loc { position: relative; width: 36px; height: 36px; }
+    .my-loc-dot { position: absolute; top: 9px; left: 9px; width: 18px; height: 18px; box-sizing: border-box; border: 3px solid #fff; border-radius: 50%; background: #ef2b2b; box-shadow: 0 1px 5px rgba(0,0,0,.4); }
+    .my-loc-arrow { position: absolute; inset: 0; display: none; }
+    .my-loc-arrow::before { position: absolute; top: -1px; left: 50%; border-right: 6px solid transparent; border-bottom: 9px solid #ef2b2b; border-left: 6px solid transparent; content: ""; transform: translateX(-50%); }
+    .my-loc.has-heading .my-loc-arrow { display: block; }
+    /* 내 위치 버튼 (카카오맵처럼 흰 동그라미 + 파란 조준선, 따라가기 중이면 파랗게 채움) */
+    .my-loc-btn { display: grid; width: 46px; height: 46px; place-items: center; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(15,23,42,.25); color: #2f6fed; cursor: pointer; }
+    .my-loc-btn.is-follow { background: #2f6fed; color: #fff; }
+    .leaflet-touch .leaflet-control.my-loc-control { border: 0; }
     .panel-row { display: flex; gap: 8px; }
     .panel-row + .panel-row { margin-top: 8px; }
     .panel-btn { flex: 1; padding: 11px 6px; border: 0; border-radius: 10px; font-size: 14px; font-weight: 800; text-align: center; text-decoration: none; cursor: pointer; }
@@ -87,14 +98,16 @@
   <div id="map"><div id="summary">경로를 불러오는 중…</div></div>
   <div id="panel">
     <div id="panel-handle" role="button" aria-label="전체 경로 버튼 다시 보기"><span></span></div>
-    <div class="panel-row">
-      <a id="btn-tmap" class="panel-btn is-tmap" rel="noopener noreferrer">T맵 전체 경로</a>
-      <a id="btn-kakao" class="panel-btn is-kakao" target="_blank" rel="noopener noreferrer">카카오맵 전체 경로</a>
+    <div id="panel-body">
+      <div class="panel-row">
+        <a id="btn-tmap" class="panel-btn is-tmap" rel="noopener noreferrer">T맵 전체 경로</a>
+        <a id="btn-kakao" class="panel-btn is-kakao" target="_blank" rel="noopener noreferrer">카카오맵 전체 경로</a>
+      </div>
+      <div class="panel-row">
+        <button id="btn-nav" class="panel-btn is-nav" type="button">길찾기 국소선택: 꺼짐</button>
+      </div>
+      <div id="panel-note"></div>
     </div>
-    <div class="panel-row">
-      <button id="btn-nav" class="panel-btn is-nav" type="button">길찾기 국소선택: 꺼짐</button>
-    </div>
-    <div id="panel-note"></div>
   </div>
   <script>
     (() => {
@@ -324,6 +337,128 @@
         return actions;
       }
 
+      // 내 위치 버튼. 지도를 열 때는 아무것도 하지 않고, 누를 때부터 위치를 쓴다(권한도 그때 처음 묻는다).
+      //   1번째: 내 위치로 지도를 한 번 옮기고 빨간 점 표시. 이후 점만 움직이고 화면은 그대로.
+      //   2번째: 따라가기(화면이 내 위치를 따라감). 지도를 끌거나 한 번 더 누르면 따라가기만 끈다.
+      function setupMyLocation(map) {
+        const ICON_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+        let watchId = null;
+        let follow = false;
+        let firstFix = false;
+        let marker = null;
+        let lastLatLng = null;
+        let compassOn = false;
+
+        const button = element("button", "my-loc-btn");
+        button.type = "button";
+        button.title = "내 위치";
+        button.innerHTML = ICON_SVG;
+        const Control = L.Control.extend({
+          options: { position: "bottomright" },
+          onAdd() {
+            const wrapper = L.DomUtil.create("div", "leaflet-control my-loc-control");
+            wrapper.appendChild(button);
+            L.DomEvent.disableClickPropagation(wrapper);
+            return wrapper;
+          },
+        });
+        map.addControl(new Control());
+
+        function setFollow(on) {
+          follow = on;
+          button.classList.toggle("is-follow", on);
+        }
+
+        function showNotice(message) {
+          summary.textContent = message ? `${GUIDE_TEXT}\n⚠️ ${message}` : GUIDE_TEXT;
+        }
+
+        function setHeading(degrees) {
+          const node = marker?.getElement()?.querySelector(".my-loc");
+          if (!node) return;
+          node.classList.add("has-heading");
+          node.querySelector(".my-loc-arrow").style.transform = `rotate(${degrees}deg)`;
+        }
+
+        // 나침반: 안드로이드는 deviceorientationabsolute, 아이폰은 webkitCompassHeading. 값이 없으면 삼각형 없이 점만.
+        function onOrientation(event) {
+          let heading = null;
+          if (typeof event.webkitCompassHeading === "number") heading = event.webkitCompassHeading;
+          else if (event.absolute && typeof event.alpha === "number") heading = 360 - event.alpha;
+          if (heading !== null) setHeading((heading + (screen.orientation?.angle || 0)) % 360);
+        }
+        function startCompass() {
+          if (compassOn) return;
+          compassOn = true;
+          const listen = () => {
+            if ("ondeviceorientationabsolute" in window) window.addEventListener("deviceorientationabsolute", onOrientation);
+            else window.addEventListener("deviceorientation", onOrientation);
+          };
+          if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+            DeviceOrientationEvent.requestPermission()
+              .then((state) => { if (state === "granted") listen(); else console.warn("[ROUTE] compass permission", state); })
+              .catch((error) => console.warn("[ROUTE] compass permission failed", error));
+          } else {
+            listen();
+          }
+        }
+
+        function onPosition(position) {
+          lastLatLng = L.latLng(position.coords.latitude, position.coords.longitude);
+          if (!marker) {
+            marker = L.marker(lastLatLng, {
+              icon: L.divIcon({ className: "", html: '<div class="my-loc"><div class="my-loc-arrow"></div><div class="my-loc-dot"></div></div>', iconSize: [36, 36], iconAnchor: [18, 18] }),
+              interactive: false, keyboard: false, zIndexOffset: 1000,
+            }).addTo(map);
+          } else {
+            marker.setLatLng(lastLatLng);
+          }
+          showNotice("");
+          if (firstFix) {
+            firstFix = false;
+            map.setView(lastLatLng, Math.max(map.getZoom(), 15));
+          } else if (follow) {
+            map.panTo(lastLatLng);
+          }
+        }
+
+        function onError(error) {
+          console.warn("[ROUTE] geolocation failed", error.code, error.message);
+          const messages = {
+            1: "위치 권한이 꺼져 있어 내 위치를 표시하지 못했습니다. 크롬 사이트 설정에서 위치를 허용해 주세요.",
+            2: "내 위치를 가져오지 못했습니다. GPS가 켜져 있는지 확인해 주세요.",
+            3: "내 위치를 가져오는 데 시간이 오래 걸리고 있습니다.",
+          };
+          showNotice(messages[error.code] || "내 위치를 가져오지 못했습니다.");
+          if (error.code === 1) {
+            navigator.geolocation.clearWatch(watchId);
+            watchId = null;
+            setFollow(false);
+          }
+        }
+
+        button.addEventListener("click", () => {
+          if (!navigator.geolocation) {
+            showNotice("이 브라우저는 위치 기능을 지원하지 않습니다.");
+            return;
+          }
+          if (watchId === null) {
+            firstFix = true;
+            watchId = navigator.geolocation.watchPosition(onPosition, onError, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+            startCompass();
+            console.info("[ROUTE] my location started");
+            return;
+          }
+          if (!follow) {
+            setFollow(true);
+            if (lastLatLng) map.panTo(lastLatLng);
+          } else {
+            setFollow(false);
+          }
+        });
+        map.on("dragstart", () => setFollow(false));
+      }
+
       function pinIcon(label, className) {
         return L.divIcon({ className: "", html: `<div class="route-map-pin ${className}">${label}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
       }
@@ -443,8 +578,11 @@
         function setPanelCollapsed(collapsed) {
           if (panel.classList.contains("is-collapsed") === collapsed) return;
           panel.classList.toggle("is-collapsed", collapsed);
-          map.invalidateSize({ pan: false });
         }
+        // 움직임이 끝난 뒤 지도 크기를 맞춘다(중간에 맞추면 지도가 덜컥거림).
+        document.getElementById("panel-body").addEventListener("transitionend", (event) => {
+          if (event.propertyName === "max-height") map.invalidateSize({ pan: false });
+        });
         map.on("popupopen", (event) => {
           openPopup = event.popup;
           if (!navMode) setPanelCollapsed(true);
@@ -461,6 +599,8 @@
           dragStartY = null;
           if (moved <= 10) setPanelCollapsed(false);
         });
+
+        setupMyLocation(map);
 
         summary.textContent = GUIDE_TEXT;
         fetchRoute(routePoints).then((route) => {
