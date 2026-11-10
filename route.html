@@ -23,8 +23,9 @@
     html, body { height: 100%; margin: 0; background: #fff; font-family: sans-serif; }
     body { display: flex; flex-direction: column; }
     #map { position: relative; flex: 1; min-height: 0; }
-    #summary { position: absolute; z-index: 1000; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 120px); padding: 6px 12px; border-radius: 8px; background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(15,23,42,.18); color: #1f2a44; font-size: 12px; font-weight: 700; text-align: center; white-space: pre-line; }
+    #summary { position: absolute; z-index: 1000; top: 10px; left: 50%; transform: translateX(-50%); width: calc(100% - 24px); box-sizing: border-box; padding: 6px 12px; border-radius: 8px; background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(15,23,42,.18); color: #1f2a44; font-size: 12px; font-weight: 700; text-align: center; white-space: pre-line; }
     .leaflet-control-attribution { font-size: 9px; }
+    .leaflet-top { top: 52px; } /* 넓힌 안내 상자 아래로 확대·지도 전환 버튼을 내림 */
     .map-layer-switch { display: flex; flex-direction: column; width: 34px; gap: 4px; background: transparent; }
     .leaflet-touch .map-layer-switch { border: 0; }
     .map-layer-btn { border: 1px solid rgba(0,0,0,.2); border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,.18); background: #fff; color: #374665; font-size: 9.5px; font-weight: 700; padding: 4px 2px; cursor: pointer; line-height: 1.2; text-align: center; }
@@ -92,7 +93,7 @@
           const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
           const data = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0))));
           const stops = (Array.isArray(data.s) ? data.s : []).map(validPoint).filter(Boolean);
-          return { office: validPoint(data.o), stops, time: textOf(data.t) };
+          return { office: validPoint(data.o), stops };
         } catch (error) {
           console.error("[ROUTE] data parse failed", error);
           return null;
@@ -190,12 +191,6 @@
           button.removeAttribute("href");
           button.setAttribute("aria-disabled", "true");
         }
-      }
-
-      function minutesText(seconds) {
-        const total = Math.round(seconds / 60);
-        const hours = Math.floor(total / 60);
-        return hours ? `${hours}시간 ${total % 60}분` : `${total}분`;
       }
 
       function pinIcon(label, className) {
@@ -302,14 +297,11 @@
         });
         updateNav();
 
-        const timeText = data.time ? ` · ${data.time} 기준` : "";
-        summary.textContent = `동선 ${stops.length}곳${timeText} · 경로 계산 중…\n${GUIDE_TEXT}`;
+        summary.textContent = GUIDE_TEXT;
         fetchRoute(routePoints).then((route) => {
           if (route.coordinates.length > 1) {
             L.polyline(route.coordinates, { color: "#2563eb", weight: 5, opacity: 0.86 }).addTo(map);
           }
-          const how = route.fallback ? "직선 추정" : "도로 기준";
-          summary.textContent = `동선 ${stops.length}곳${timeText} · ${(route.distance / 1000).toFixed(1)}km · ${minutesText(route.duration)} (${how})\n${GUIDE_TEXT}`;
           console.info("[ROUTE] route drawn", { stops: stops.length, fallback: route.fallback });
         });
       }
