@@ -353,7 +353,10 @@
         }
         stops.forEach((stop, index) => {
           const marker = L.marker([stop.lat, stop.lon], { icon: pinIcon(String(index + 1), ""), keyboard: false }).addTo(map);
-          marker.bindPopup(() => buildPopup(stop, index), { className: "work-marker-popup", maxWidth: 460, minWidth: 0 });
+          marker.bindPopup(() => buildPopup(stop, index), {
+            className: "work-marker-popup", maxWidth: 460, minWidth: 0,
+            autoPanPaddingTopLeft: L.point(10, 70), // 상단 안내 상자에 가리지 않게
+          });
           marker.on("click", () => {
             if (!navMode) return;
             marker.closePopup();
