@@ -69,6 +69,11 @@
     .work-marker-equip-field strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
     .work-marker-memo-row { display: flex; align-items: center; gap: 6px; padding: 9px 11px; border-top: 1px solid #e5eaf3; background: #fff; }
     .work-marker-memo-content { flex: 1; min-width: 0; overflow: hidden; color: #4c1d95; font-size: 10.5px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .work-marker-popup-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 12px 12px 10px; border-top: 1px solid #e5eaf3; background: #fff; }
+    .work-marker-popup-button { display: flex; align-items: center; justify-content: center; min-height: 36px; border-radius: 10px; font-size: 12px; font-weight: 800; text-align: center; text-decoration: none; }
+    .work-marker-popup-button.is-tmap { background: #ef3e42; color: #fff !important; }
+    .work-marker-popup-button.is-kakao { background: #fee500; color: #191919 !important; }
+    .work-marker-popup-button.is-roadview { background: linear-gradient(135deg, #0d9488, #14b8a6); color: #fff !important; }
     .work-marker-memo-status { flex: 0 0 auto; border-radius: 999px; padding: 5px 14px; font-size: 10.5px; font-weight: 900; color: #92400e; background: #fef3c7; }
   </style>
 </head>
@@ -76,8 +81,8 @@
   <div id="map"><div id="summary">경로를 불러오는 중…</div></div>
   <div id="panel">
     <div class="panel-row">
-      <a id="btn-kakao" class="panel-btn is-kakao" target="_blank" rel="noopener noreferrer">카카오맵 길찾기</a>
-      <a id="btn-tmap" class="panel-btn is-tmap" rel="noopener noreferrer">T맵 길찾기</a>
+      <a id="btn-tmap" class="panel-btn is-tmap" rel="noopener noreferrer">T맵 전체 경로</a>
+      <a id="btn-kakao" class="panel-btn is-kakao" target="_blank" rel="noopener noreferrer">카카오맵 전체 경로</a>
     </div>
     <div class="panel-row">
       <button id="btn-nav" class="panel-btn is-nav" type="button">길찾기 국소선택: 꺼짐</button>
@@ -250,7 +255,7 @@
         if (stop.items.length) heading.appendChild(element("span", "", `${stop.items.length.toLocaleString("ko-KR")}건`));
         box.appendChild(heading);
         if (stop.omitted) {
-          box.appendChild(element("div", "work-marker-omitted", OMITTED_TEXT));
+          box.append(element("div", "work-marker-omitted", OMITTED_TEXT), buildPopupActions(stop));
           return box;
         }
         if (stop.items.length) {
@@ -290,7 +295,26 @@
           memoRow.append(content, element("span", "work-marker-memo-status", "처리중"));
           box.appendChild(memoRow);
         });
+        box.appendChild(buildPopupActions(stop));
         return box;
+      }
+
+      // 국소 팝업 아래 버튼 줄(dmov-11 팝업 버튼 줄과 같은 모양): 현재 위치 → 이 국소 길찾기, 로드뷰.
+      function buildPopupActions(stop) {
+        const actions = element("div", "work-marker-popup-actions");
+        const tmapParams = new URLSearchParams({ goalname: stop.name, goalx: String(stop.lon), goaly: String(stop.lat) });
+        [
+          ["T맵 길찾기", "is-tmap", `tmap://route?${tmapParams.toString()}`],
+          ["카카오맵 길찾기", "is-kakao", `https://map.kakao.com/link/to/${encodeURIComponent(safeName(stop.name))},${stop.lat},${stop.lon}`],
+          ["로드뷰", "is-roadview", `https://map.kakao.com/link/roadview/${stop.lat},${stop.lon}`],
+        ].forEach(([label, className, url]) => {
+          const link = element("a", `work-marker-popup-button ${className}`, label);
+          link.href = url;
+          if (className !== "is-tmap") link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          actions.appendChild(link);
+        });
+        return actions;
       }
 
       function pinIcon(label, className) {
@@ -379,6 +403,10 @@
           const tmap = navPoints(office, chosen, TMAP_MAX_POINTS);
           setLink(kakaoButton, kakaoAll.length >= 2 ? kakaoUrl(kakaoAll) : "");
           setLink(tmapButton, tmap.points.length >= 2 ? tmapUrl(tmap.points) : "");
+          // 국소선택을 켜면 고른 국소로만 가는 것이 버튼에 보이게 이름을 바꾼다.
+          const scope = navMode ? `선택 경로 (${chosen.length}곳)` : "전체 경로";
+          tmapButton.textContent = `T맵 ${scope}`;
+          kakaoButton.textContent = `카카오맵 ${scope}`;
           const lines = [`출발·도착 포함 카카오맵은 최대 ${KAKAO_MAX_POINTS}곳, T맵은 최대 ${TMAP_MAX_POINTS}곳까지 연동됩니다.`];
           const cuts = [];
           if (kakao.cut > 0) cuts.push(`카카오맵 ${kakao.cut}곳`);
