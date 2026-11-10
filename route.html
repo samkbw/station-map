@@ -461,6 +461,26 @@
           }
         });
         map.on("dragstart", () => setFollow(false));
+        return { stopFollow: () => setFollow(false) };
+      }
+
+      // 전체 보기 버튼(내 위치 버튼 바로 위): 처음 열 때처럼 사무실과 국소 전체가 한 화면에 들어오게 맞춘다.
+      function addFitAllControl(map, fitAll) {
+        const button = element("button", "my-loc-btn");
+        button.type = "button";
+        button.title = "전체 경로 보기";
+        button.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+        button.addEventListener("click", fitAll);
+        const Control = L.Control.extend({
+          options: { position: "bottomright" },
+          onAdd() {
+            const wrapper = L.DomUtil.create("div", "leaflet-control my-loc-control");
+            wrapper.appendChild(button);
+            L.DomEvent.disableClickPropagation(wrapper);
+            return wrapper;
+          },
+        });
+        map.addControl(new Control());
       }
 
       function escapeHtml(value) {
@@ -551,7 +571,8 @@
         });
 
         const routePoints = office ? [office, ...stops, office] : stops;
-        map.fitBounds(routePoints.map((p) => [p.lat, p.lon]), { padding: [40, 40], maxZoom: 15 });
+        const fitRoute = () => map.fitBounds(routePoints.map((p) => [p.lat, p.lon]), { padding: [40, 40], maxZoom: 15 });
+        fitRoute();
 
         function updateNav() {
           const chosen = stops.filter((_stop, index) => selected[index]);
@@ -617,7 +638,12 @@
           if (moved <= 10) setPanelCollapsed(false);
         });
 
-        setupMyLocation(map);
+        const myLocation = setupMyLocation(map);
+        // bottomright는 나중에 붙인 버튼이 위로 쌓이므로 내 위치 버튼 위에 놓인다.
+        addFitAllControl(map, () => {
+          myLocation.stopFollow();
+          fitRoute();
+        });
 
         summary.textContent = GUIDE_TEXT;
         fetchRoute(routePoints).then((route) => {
