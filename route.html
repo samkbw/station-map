@@ -7,8 +7,8 @@
   <!--
     경로 지도 페이지. 받은 순서대로 번호 핀을 찍고 경로를 그린다.
     데이터: #r1=<base64url(JSON)>  (서버로 전송되지 않음)
-      JSON = {"o": [위도, 경도, 이름] | null, "s": [[위도, 경도, 이름, 국사정보[8], 메모[], 업무[[국소명, 업무구분, 제목, 시작, 마감]]], ...]}
-      o = 출발·복귀 지점(사무실), s = 방문 순서대로의 국소. 링크 한도로 내용을 못 넣은 국소는 4번째가 null.
+      JSON = {"o": [위도, 경도, 이름] | null, "s": [[위도, 경도, 이름, 건수[A, J, S], 국사정보[8], 메모[], 업무[[국소명, 업무구분, 제목, 시작, 마감]]], ...]}
+      o = 출발·복귀 지점(사무실), s = 방문 순서대로의 국소. 링크 한도로 팝업 내용을 못 넣은 국소는 5번째가 null.
     경로 선: OSRM 공개 서버(도로 경로). 실패하면 직선거리·시속 40km로 대신 그린다.
     길찾기 연동(휴대폰에서 확인한 값): 출발·도착 포함 카카오맵 최대 7곳, T맵 최대 4곳(경유 2곳).
       카카오맵은 전부 넣는다(7곳에서 스스로 멈추고 7번째가 도착지).
@@ -34,6 +34,9 @@
     .route-map-pin { display: grid; width: 26px; height: 26px; box-sizing: border-box; place-items: center; border: 2px solid #fff; border-radius: 50%; color: #fff; background: #16a34a; box-shadow: 0 4px 12px rgba(15,23,42,.3); font-size: 10px; font-weight: 900; }
     .route-map-pin.is-office { background: #0f172a; }
     .route-map-pin.is-off { background: #cbd5e1; color: #475569; }
+    .route-map-pin { position: relative; }
+    .route-map-tag { position: absolute; bottom: calc(100% + 4px); left: 50%; padding: 2px 6px; border: 1px solid #d5ddeb; border-radius: 6px; background: rgba(255,255,255,.95); box-shadow: 0 1px 4px rgba(15,23,42,.18); color: #1f2a44; font-size: 10.5px; font-weight: 800; white-space: nowrap; transform: translateX(-50%); pointer-events: none; }
+    .route-map-pin.is-off .route-map-tag { color: #94a3b8; background: rgba(241,245,249,.92); }
     /* 하단 버튼 */
     #panel { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #e5eaf3; background: #fff; }
     /* 국소 팝업이 열리면 패널을 접고 손잡이만 남긴다(누르거나 위로 끌면 다시 펼침). 높이를 0.25초 동안 바꿔 스르륵 움직인다. */
@@ -149,10 +152,11 @@
             const point = validPoint(row);
             if (!point) return null;
             const list = (value) => (Array.isArray(value) ? value : []);
-            point.omitted = row[3] === null;
-            point.equip = list(row[3]).map(textOf);
-            point.memos = list(row[4]).map(textOf);
-            point.items = list(row[5]).filter(Array.isArray).map((item) => item.map(textOf));
+            point.counts = list(row[3]).map((value) => Number(value) || 0);
+            point.omitted = row[4] === null;
+            point.equip = list(row[4]).map(textOf);
+            point.memos = list(row[5]).map(textOf);
+            point.items = list(row[6]).filter(Array.isArray).map((item) => item.map(textOf));
             return point;
           }).filter(Boolean);
           return { office: validPoint(data.o), stops };
@@ -459,8 +463,20 @@
         map.on("dragstart", () => setFollow(false));
       }
 
-      function pinIcon(label, className) {
-        return L.divIcon({ className: "", html: `<div class="route-map-pin ${className}">${label}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+      function escapeHtml(value) {
+        return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+      }
+
+      // 핀 위 이름표: 텔레그램 스케줄 목록 버튼과 같은 형식 "[A:1 J:2] 국소명", 업무가 없으면 "[0건]".
+      function stopTag(stop) {
+        const tags = ["A", "J", "S"].map((key, i) => (stop.counts[i] ? `${key}:${stop.counts[i]}` : "")).filter(Boolean);
+        return `${tags.length ? `[${tags.join(" ")}]` : "[0건]"} ${stop.name}`;
+      }
+
+      function pinIcon(label, className, tag = "") {
+        // 링크로 받은 이름이 들어가므로 HTML로 해석되지 않게 바꿔 넣는다.
+        const tagHtml = tag ? `<div class="route-map-tag">${escapeHtml(tag)}</div>` : "";
+        return L.divIcon({ className: "", html: `<div class="route-map-pin ${className}">${tagHtml}${label}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
       }
 
       function render() {
@@ -512,13 +528,14 @@
         const selected = stops.map(() => true);
         let navMode = false;
         const markers = [];
+        const stopIcon = (index) => pinIcon(String(index + 1), selected[index] ? "" : "is-off", stopTag(stops[index]));
 
         if (office) {
           L.marker([office.lat, office.lon], { icon: pinIcon("출", "is-office"), keyboard: false })
             .bindPopup(document.createTextNode(`출발·복귀: ${office.name}`)).addTo(map);
         }
         stops.forEach((stop, index) => {
-          const marker = L.marker([stop.lat, stop.lon], { icon: pinIcon(String(index + 1), ""), keyboard: false }).addTo(map);
+          const marker = L.marker([stop.lat, stop.lon], { icon: stopIcon(index), keyboard: false }).addTo(map);
           marker.bindPopup(() => buildPopup(stop, index), {
             className: "work-marker-popup", maxWidth: 460, minWidth: 0,
             autoPanPaddingTopLeft: L.point(56, 70), // 상단 안내 상자·왼쪽 확대/지도 전환 버튼에 가리지 않게
@@ -527,7 +544,7 @@
             if (!navMode) return;
             marker.closePopup();
             selected[index] = !selected[index];
-            marker.setIcon(pinIcon(String(index + 1), selected[index] ? "" : "is-off"));
+            marker.setIcon(stopIcon(index));
             updateNav();
           });
           markers.push(marker);
@@ -564,7 +581,7 @@
           navButton.textContent = navMode ? "길찾기 국소선택: 켜짐 (핀을 눌러 선택·해제)" : "길찾기 국소선택: 꺼짐";
           if (!navMode) {
             selected.fill(true);
-            markers.forEach((marker, index) => marker.setIcon(pinIcon(String(index + 1), "")));
+            markers.forEach((marker, index) => marker.setIcon(stopIcon(index)));
           }
           updateNav();
         });
