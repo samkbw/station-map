@@ -6,8 +6,11 @@
   <title>국소 지도</title>
   <!--
     국소 지도 페이지.
-    좌표는 주소의 # 뒤로 넘긴다(서버로 전송되지 않음).
-    형식: #위도,경도,이름;위도,경도,이름  (이름은 encodeURIComponent로 인코딩)
+    데이터는 주소의 # 뒤로 넘긴다(서버로 전송되지 않음). 두 형식을 읽는다.
+      1) 간단 형식: #위도,경도,이름;위도,경도,이름  (이름은 encodeURIComponent로 인코딩)
+      2) v2 형식:   #v2=<base64url(JSON)>
+         JSON = [[위도, 경도, 이름, 스케줄(0/1), 국사정보[8], 메모[], 업무[[국소명, 업무구분, 제목, 시작, 마감]]], ...]
+         국사정보 순서: 장비타입, 제조사, 총층수, 설치층, 국사형태, 옥상옥탑, 공용대표구분, 공용화주관사
     지도: Leaflet 1.9.4, OSM 일반 / Esri 위성, 물방울 핀.
     공개 저장소에도 그대로 올리는 파일이므로 내부 이름·주소를 적지 않는다.
   -->
@@ -16,32 +19,59 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
   <style>
+    :root { --primary: #3e6ee8; --muted: #6b7895; --text: #1f2a44; }
     html, body { height: 100%; margin: 0; background: #fff; font-family: sans-serif; }
     #map { position: absolute; inset: 0; }
-    #notice { position: absolute; z-index: 1000; top: 12px; left: 50%; transform: translateX(-50%); padding: 8px 14px; border-radius: 8px; background: rgba(15,23,42,.85); color: #fff; font-size: 13px; display: none; }
+    #guide { position: absolute; z-index: 1000; top: 10px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 120px); padding: 6px 12px; border-radius: 8px; background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(15,23,42,.18); color: #1f2a44; font-size: 12px; font-weight: 700; text-align: center; }
+    #notice { position: absolute; z-index: 1000; top: 52px; left: 50%; transform: translateX(-50%); padding: 8px 14px; border-radius: 8px; background: rgba(15,23,42,.85); color: #fff; font-size: 13px; display: none; }
     .leaflet-control-attribution { font-size: 9px; }
-    /* 위성/일반 전환 버튼 (웹과 같은 모양) */
+    /* 위성/일반 전환 버튼 */
     .map-layer-switch { display: flex; flex-direction: column; width: 34px; gap: 4px; background: transparent; }
     .leaflet-touch .map-layer-switch { border: 0; }
     .map-layer-btn { border: 1px solid rgba(0,0,0,.2); border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,.18); background: #fff; color: #374665; font-size: 9.5px; font-weight: 700; padding: 4px 2px; cursor: pointer; line-height: 1.2; text-align: center; }
     .map-layer-btn.is-active { background: #3f57d5; color: #fff; }
-    /* 물방울 핀 (웹과 같은 모양) */
+    /* 물방울 핀 (🔒 스케줄, 📝 메모) */
     .work-map-pin { position: relative; width: 24px; height: 24px; border: 2px solid rgba(255,255,255,.96); border-radius: 50% 50% 50% 0; background: #f59e0b; box-shadow: 0 3px 10px rgba(245,158,11,.34); transform: rotate(-45deg); }
     .work-map-pin::after { position: absolute; top: 50%; left: 50%; width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,.96); content: ""; transform: translate(-50%,-50%); }
+    .work-map-pin-lock { position: absolute; top: -11px; left: -11px; z-index: 2; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.38); font-size: 12px; line-height: 20px; text-align: center; transform: rotate(45deg); }
+    .work-map-pin.has-memo::before { position: absolute; top: -7px; right: -7px; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); content: "📝"; font-size: 8px; line-height: 13px; text-align: center; transform: rotate(45deg); }
     /* 팝업 */
-    .work-marker-popup .leaflet-popup-content-wrapper { border-radius: 16px; overflow: hidden; box-shadow: 0 18px 40px rgba(15,23,42,.22), 0 2px 8px rgba(15,23,42,.08); }
-    .popup-name { display: block; margin-bottom: 8px; font-size: 14px; color: #1f2937; }
-    .popup-route { display: inline-block; padding: 6px 12px; border-radius: 8px; background: #fee500; color: #191919; font-size: 13px; font-weight: 700; text-decoration: none; }
+    .work-marker-popup .leaflet-popup-content-wrapper { padding: 0; border-radius: 16px; overflow: hidden; box-shadow: 0 18px 40px rgba(15,23,42,.22), 0 2px 8px rgba(15,23,42,.08); }
+    .work-marker-popup .leaflet-popup-content { width: auto !important; margin: 0; }
+    .work-marker-popover { width: min(430px, 86vw); }
+    .work-marker-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 40px 12px 14px; border-bottom: 1px solid #eef1f7; background: linear-gradient(165deg, #f5f8ff, #fdfbff); }
+    .work-marker-popover-heading strong { overflow: hidden; color: #1c2b4a; font-size: 12.5px; font-weight: 900; text-overflow: ellipsis; white-space: nowrap; }
+    .work-marker-popover-heading span { flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; color: var(--primary); background: rgba(62,110,232,.1); font-size: 10.5px; font-weight: 800; }
+    .work-marker-scheduled-notice { padding: 6px 14px; border-bottom: 1px solid #fde68a; color: #92400e; background: #fffbeb; font-size: 10.5px; font-weight: 900; }
+    .work-marker-popover-table { max-height: 260px; overflow-y: auto; }
+    .work-marker-popover-row { display: grid; grid-template-columns: minmax(90px, 1.1fr) minmax(60px, .8fr) minmax(120px, 1.8fr); border-bottom: 1px solid #edf1f7; }
+    .work-marker-popover-row:last-child { border-bottom: 0; }
+    .work-marker-popover-row span { min-width: 0; padding: 7px 9px; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .work-marker-popover-row span + span { border-left: 1px solid #edf1f7; }
+    .work-marker-popover-row.is-header { position: sticky; z-index: 1; top: 0; color: var(--muted); background: #f9fbfe; font-weight: 800; }
+    .work-marker-row-occurred { display: block; margin-top: 1px; overflow: hidden; color: #b42318; font-size: 9.5px; font-weight: 700; text-overflow: ellipsis; }
+    .work-marker-equip-box { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; padding: 8px 11px; border-top: 1px solid #e5eaf3; background: #f8faff; }
+    .work-marker-equip-box > .work-marker-equip-field { grid-column: span 2; }
+    .work-marker-equip-box > .work-marker-equip-field:nth-child(-n+2) { grid-column: span 3; }
+    .work-marker-equip-field { display: grid; gap: 2px; min-width: 0; }
+    .work-marker-equip-field span { color: var(--muted); font-size: 9px; font-weight: 800; }
+    .work-marker-equip-field strong { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .work-marker-memo-row { display: flex; align-items: center; gap: 6px; padding: 9px 11px; border-top: 1px solid #e5eaf3; background: #fff; }
+    .work-marker-memo-content { flex: 1; min-width: 0; overflow: hidden; color: #4c1d95; font-size: 10.5px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .work-marker-memo-status { flex: 0 0 auto; border-radius: 999px; padding: 5px 14px; font-size: 10.5px; font-weight: 900; color: #92400e; background: #fef3c7; }
+    .popup-actions { padding: 9px 11px; border-top: 1px solid #e5eaf3; text-align: right; }
+    .popup-route { display: inline-block; padding: 6px 12px; border-radius: 8px; background: #fee500; color: #191919 !important; font-size: 12px; font-weight: 700; text-decoration: none; }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="guide">최대 몇 국소까지 표시되며, 조회 용도입니다.</div>
   <div id="notice"></div>
   <script>
     (() => {
       const DEFAULT_CENTER = [37.5665, 126.9780];
       const DEFAULT_ZOOM = 11;
-      const MAX_MARKERS = 200;
+      const EQUIP_LABELS = ["장비타입", "제조사", "총층수", "설치층", "국사형태", "옥상옥탑", "공용대표구분", "공용화주관사"];
 
       function showNotice(message) {
         const notice = document.getElementById("notice");
@@ -49,31 +79,64 @@
         notice.style.display = "block";
       }
 
-      // # 뒤 문자열을 [{lat, lon, name}] 으로 바꾼다. 형식이 틀린 항목은 건너뛰고 개수를 콘솔에 남긴다.
-      function parseStations(hash) {
+      function validCoord(lat, lon) {
+        return Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+      }
+
+      function textOf(value) {
+        return value === null || value === undefined ? "" : String(value);
+      }
+
+      // 간단 형식: 위도,경도,이름;...  형식이 틀린 항목은 건너뛴다.
+      function parseSimple(body) {
         const stations = [];
-        let skipped = 0;
-        hash.replace(/^#/, "").split(";").forEach((part) => {
+        body.split(";").forEach((part) => {
           if (!part) return;
           const fields = part.split(",");
           const lat = Number(fields[0]);
           const lon = Number(fields[1]);
-          if (fields.length < 2 || !Number.isFinite(lat) || !Number.isFinite(lon)
-            || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-            skipped += 1;
-            return;
-          }
+          if (fields.length < 2 || !validCoord(lat, lon)) return;
           let name = "";
           try {
             name = decodeURIComponent(fields.slice(2).join(",")).trim();
           } catch (error) {
-            skipped += 1;
             return;
           }
-          stations.push({ lat, lon, name: name || `${lat.toFixed(5)}, ${lon.toFixed(5)}` });
+          stations.push({ lat, lon, name, scheduled: false, equip: [], memos: [], items: [] });
         });
-        if (skipped) console.warn("[MAP] skipped invalid items", skipped);
-        return stations.slice(0, MAX_MARKERS);
+        return stations;
+      }
+
+      // v2 형식: base64url(JSON). 배열 모양이 다르면 그 항목만 건너뛴다.
+      function parseV2(body) {
+        const base64 = body.replace(/-/g, "+").replace(/_/g, "/");
+        const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
+        const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+        const rows = JSON.parse(new TextDecoder().decode(bytes));
+        if (!Array.isArray(rows)) return [];
+        return rows.filter((row) => Array.isArray(row) && validCoord(Number(row[0]), Number(row[1]))).map((row) => ({
+          lat: Number(row[0]),
+          lon: Number(row[1]),
+          name: textOf(row[2]).trim(),
+          scheduled: row[3] === 1,
+          equip: Array.isArray(row[4]) ? row[4].map(textOf) : [],
+          memos: Array.isArray(row[5]) ? row[5].map(textOf) : [],
+          items: Array.isArray(row[6]) ? row[6].filter(Array.isArray).map((item) => item.map(textOf)) : [],
+        }));
+      }
+
+      function parseStations(hash) {
+        const body = hash.replace(/^#/, "");
+        try {
+          const stations = body.startsWith("v2=") ? parseV2(body.slice(3)) : parseSimple(body);
+          stations.forEach((station) => {
+            if (!station.name) station.name = `${station.lat.toFixed(5)}, ${station.lon.toFixed(5)}`;
+          });
+          return stations;
+        } catch (error) {
+          console.error("[MAP] data parse failed", error);
+          return [];
+        }
       }
 
       // 카카오맵 길찾기 링크. 이름의 쉼표는 링크 구분자와 겹치므로 공백으로 바꾼다.
@@ -82,19 +145,74 @@
         return `https://map.kakao.com/link/to/${name},${station.lat},${station.lon}`;
       }
 
-      // 팝업 내용은 textContent 로만 넣는다(링크로 받은 이름을 HTML 로 해석하지 않음).
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      // "2026-11-10 10:03" → "11-10 10:03" (웹 팝업과 같은 표시)
+      function shortDate(value) {
+        return value ? value.slice(5) : "";
+      }
+
+      // 팝업 내용은 textContent 로만 넣는다(링크로 받은 값을 HTML 로 해석하지 않음).
       function buildPopup(station) {
-        const box = document.createElement("div");
-        const name = document.createElement("strong");
-        name.className = "popup-name";
-        name.textContent = station.name;
-        const route = document.createElement("a");
-        route.className = "popup-route";
+        const box = element("div", "work-marker-popover");
+        const heading = element("div", "work-marker-popover-heading");
+        heading.appendChild(element("strong", "", station.name));
+        if (station.items.length) heading.appendChild(element("span", "", `${station.items.length.toLocaleString("ko-KR")}건`));
+        box.appendChild(heading);
+        if (station.scheduled) box.appendChild(element("div", "work-marker-scheduled-notice", "🔒 스케줄 완료"));
+
+        if (station.items.length) {
+          const table = element("div", "work-marker-popover-table");
+          const header = element("div", "work-marker-popover-row is-header");
+          ["국소명", "업무구분", "제목"].forEach((label) => header.appendChild(element("span", "", label)));
+          table.appendChild(header);
+          station.items.forEach(([siteName, workType, title, startAt, dueDate]) => {
+            const row = element("div", "work-marker-popover-row");
+            row.appendChild(element("span", "", siteName));
+            row.appendChild(element("span", "", workType));
+            const titleCell = element("span", "", title);
+            titleCell.title = `${title}\n시작 ${startAt || "-"} ~ 마감 ${dueDate || "-"}`;
+            if (startAt || dueDate) {
+              const period = startAt ? [shortDate(startAt), shortDate(dueDate)].filter(Boolean).join(" ~ ") : `~ ${shortDate(dueDate)}`;
+              titleCell.appendChild(element("small", "work-marker-row-occurred", period));
+            }
+            row.appendChild(titleCell);
+            table.appendChild(row);
+          });
+          box.appendChild(table);
+        }
+
+        if (station.equip.some(Boolean)) {
+          const equipBox = element("div", "work-marker-equip-box");
+          EQUIP_LABELS.forEach((label, index) => {
+            const field = element("div", "work-marker-equip-field");
+            field.appendChild(element("span", "", label));
+            field.appendChild(element("strong", "", station.equip[index] || "—"));
+            equipBox.appendChild(field);
+          });
+          box.appendChild(equipBox);
+        }
+
+        station.memos.forEach((memo) => {
+          const memoRow = element("div", "work-marker-memo-row");
+          const content = element("span", "work-marker-memo-content", memo);
+          content.title = memo;
+          memoRow.append(content, element("span", "work-marker-memo-status", "처리중"));
+          box.appendChild(memoRow);
+        });
+
+        const actions = element("div", "popup-actions");
+        const route = element("a", "popup-route", "카카오맵 길찾기");
         route.href = kakaoRouteUrl(station);
         route.target = "_blank";
         route.rel = "noopener noreferrer";
-        route.textContent = "카카오맵 길찾기";
-        box.append(name, route);
+        actions.appendChild(route);
+        box.appendChild(actions);
         return box;
       }
 
@@ -129,6 +247,18 @@
         map.addControl(new LayerSwitcher());
       }
 
+      function markerIcon(station) {
+        const hasMemo = station.memos.length > 0;
+        const lock = station.scheduled ? '<span class="work-map-pin-lock" aria-hidden="true">🔒</span>' : "";
+        return L.divIcon({
+          className: "",
+          html: `<div class="work-map-pin${hasMemo ? " has-memo" : ""}">${lock}</div>`,
+          iconSize: [28, 28],
+          iconAnchor: [12, 24],
+          popupAnchor: [0, -10],
+        });
+      }
+
       function render() {
         if (typeof L === "undefined") {
           showNotice("지도 라이브러리를 불러오지 못했습니다.");
@@ -158,17 +288,10 @@
           showNotice("표시할 국소가 없습니다.");
           return;
         }
-        const icon = L.divIcon({
-          className: "",
-          html: '<div class="work-map-pin"></div>',
-          iconSize: [28, 28],
-          iconAnchor: [12, 24],
-          popupAnchor: [0, -10],
-        });
         const bounds = [];
         stations.forEach((station) => {
-          L.marker([station.lat, station.lon], { icon, keyboard: false })
-            .bindPopup(buildPopup(station), { className: "work-marker-popup", minWidth: 160 })
+          L.marker([station.lat, station.lon], { icon: markerIcon(station), keyboard: false })
+            .bindPopup(() => buildPopup(station), { className: "work-marker-popup", maxWidth: 460, minWidth: 0 })
             .addTo(map);
           bounds.push([station.lat, station.lon]);
         });
