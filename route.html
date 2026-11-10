@@ -162,19 +162,21 @@
         return `https://map.kakao.com/link/by/car/${parts.join("/")}`;
       }
 
+      // T맵 형식: start… / via{n}name·via{n}x·via{n}y / goal… (x=경도, y=위도). 휴대폰에서 직접 확인한 형식.
       function tmapUrl(points) {
+        const start = points[0];
         const goal = points[points.length - 1];
-        const params = new URLSearchParams({ rGoName: goal.name, rGoX: String(goal.lon), rGoY: String(goal.lat) });
-        if (points.length > 1) {
-          params.set("rStName", points[0].name);
-          params.set("rStX", String(points[0].lon));
-          params.set("rStY", String(points[0].lat));
-        }
-        points.slice(1, -1).forEach((p, index) => {
-          params.set(`rV${index + 1}Name`, p.name);
-          params.set(`rV${index + 1}X`, String(p.lon));
-          params.set(`rV${index + 1}Y`, String(p.lat));
+        const params = new URLSearchParams({
+          startname: start.name, startx: String(start.lon), starty: String(start.lat),
         });
+        points.slice(1, -1).forEach((p, index) => {
+          params.set(`via${index + 1}name`, p.name);
+          params.set(`via${index + 1}x`, String(p.lon));
+          params.set(`via${index + 1}y`, String(p.lat));
+        });
+        params.set("goalname", goal.name);
+        params.set("goalx", String(goal.lon));
+        params.set("goaly", String(goal.lat));
         return `tmap://route?${params.toString()}`;
       }
 

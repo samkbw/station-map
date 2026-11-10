@@ -28,6 +28,13 @@
       ["D. 경유 via1name/via1x/via1y", { startname: S[0], startx: S[1], starty: S[2], via1name: V[0], via1x: V[1], via1y: V[2], goalname: G[0], goalx: G[1], goaly: G[2] }],
       ["E. 경유 rV1Name/rV1X/rV1Y + goal", { goalname: G[0], goalx: G[1], goaly: G[2], rV1Name: V[0], rV1X: V[1], rV1Y: V[2] }],
       ["F. 경유 passList", { startx: S[1], starty: S[2], goalname: G[0], goalx: G[1], goaly: G[2], passList: `${V[1]},${V[2]}` }],
+      ["H. 경유 5곳 (via1~via5)", { startname: S[0], startx: S[1], starty: S[2],
+        via1name: "경포대", via1x: 128.8967, via1y: 37.7952,
+        via2name: "오죽헌", via2x: 128.8786, via2y: 37.7794,
+        via3name: "강릉시청", via3x: 128.8761, via3y: 37.7519,
+        via4name: "안목해변", via4x: 128.9472, via4y: 37.7722,
+        via5name: "주문진항", via5x: 128.8270, via5y: 37.8932,
+        goalname: G[0], goalx: G[1], goaly: G[2] }],
       ["G. 예전 형식 rGo (비교용)", { rGoName: G[0], rGoX: G[1], rGoY: G[2] }],
     ];
     const list = document.getElementById("list");
