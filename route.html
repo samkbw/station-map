@@ -467,10 +467,10 @@
         return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
       }
 
-      // 핀 위 이름표: 텔레그램 스케줄 목록 버튼과 같은 형식 "[A:1 J:2] 국소명", 업무가 없으면 "[0건]".
-      function stopTag(stop) {
+      // 핀 위 이름표: 텔레그램 스케줄 목록 버튼과 같은 형식 "1. [A:1 J:2] 국소명", 업무가 없으면 "[0건]".
+      function stopTag(stop, index) {
         const tags = ["A", "J", "S"].map((key, i) => (stop.counts[i] ? `${key}:${stop.counts[i]}` : "")).filter(Boolean);
-        return `${tags.length ? `[${tags.join(" ")}]` : "[0건]"} ${stop.name}`;
+        return `${index + 1}. ${tags.length ? `[${tags.join(" ")}]` : "[0건]"} ${stop.name}`;
       }
 
       function pinIcon(label, className, tag = "") {
@@ -528,7 +528,7 @@
         const selected = stops.map(() => true);
         let navMode = false;
         const markers = [];
-        const stopIcon = (index) => pinIcon(String(index + 1), selected[index] ? "" : "is-off", stopTag(stops[index]));
+        const stopIcon = (index) => pinIcon(String(index + 1), selected[index] ? "" : "is-off", stopTag(stops[index], index));
 
         if (office) {
           L.marker([office.lat, office.lon], { icon: pinIcon("출", "is-office"), keyboard: false })
