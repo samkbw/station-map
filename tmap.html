@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>T맵 길찾기</title>
+  <!--
+    T맵 길찾기 연결 페이지. 텔레그램 버튼은 tmap:// 주소를 넣을 수 없어서 이 페이지를 거친다.
+    데이터: #t1=<base64url(JSON [위도, 경도, 이름])>  (서버로 전송되지 않음)
+    열리면 바로 T맵(현재 위치 → 목적지)을 열고, 브라우저가 막으면 버튼을 눌러 열게 한다.
+    공개 저장소에도 그대로 올리는 파일이므로 내부 이름·주소를 적지 않는다.
+  -->
+  <style>
+    html, body { height: 100%; margin: 0; background: #fff; font-family: sans-serif; }
+    body { display: grid; place-items: center; padding: 0 16px; box-sizing: border-box; }
+    .box { width: 100%; max-width: 360px; text-align: center; }
+    .name { margin: 0 0 6px; color: #1f2a44; font-size: 16px; font-weight: 800; word-break: break-all; }
+    .desc { margin: 0 0 18px; color: #6b7895; font-size: 13px; line-height: 1.5; }
+    .btn { display: block; padding: 14px 0; border-radius: 12px; background: #ef3e42; color: #fff; font-size: 16px; font-weight: 800; text-decoration: none; }
+    .btn[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <p class="name" id="name"></p>
+    <p class="desc" id="desc">T맵을 여는 중입니다.<br />열리지 않으면 아래 버튼을 눌러 주세요.</p>
+    <a class="btn" id="btn" aria-disabled="true">T맵으로 길찾기</a>
+  </div>
+  <script>
+    (() => {
+      const nameNode = document.getElementById("name");
+      const descNode = document.getElementById("desc");
+      const button = document.getElementById("btn");
+
+      // #t1=base64url(JSON [위도, 경도, 이름]). 형식이 틀리면 null.
+      function parseData(hash) {
+        const body = hash.replace(/^#/, "");
+        if (!body.startsWith("t1=")) return null;
+        try {
+          const base64 = body.slice(3).replace(/-/g, "+").replace(/_/g, "/");
+          const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
+          const row = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0))));
+          const lat = Number(row[0]);
+          const lon = Number(row[1]);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+          const name = row[2] === null || row[2] === undefined ? "" : String(row[2]).trim();
+          return { lat, lon, name: name || "목적지" };
+        } catch (error) {
+          console.error("[TMAP] data parse failed", error);
+          return null;
+        }
+      }
+
+      const data = parseData(window.location.hash);
+      if (!data) {
+        descNode.textContent = "목적지 정보를 읽지 못했습니다. 텔레그램에서 다시 눌러 주세요.";
+        return;
+      }
+      // T맵 형식: goalname·goalx(경도)·goaly(위도). 출발지를 넣지 않으면 현재 위치에서 출발한다.
+      const params = new URLSearchParams({ goalname: data.name, goalx: String(data.lon), goaly: String(data.lat) });
+      const url = `tmap://route?${params.toString()}`;
+      nameNode.textContent = data.name;
+      button.href = url;
+      button.removeAttribute("aria-disabled");
+      console.info("[TMAP] open", { name: data.name });
+      window.location.href = url;
+    })();
+  </script>
+</body>
+</html>
