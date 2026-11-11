@@ -1,0 +1,12 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>check</title></head>
+<body style="font:16px sans-serif;padding:16px"><pre id="out"></pre><script>
+const h = location.hash.replace(/^#/, ""), q = location.search.replace(/^\?/, "");
+const hp = new URLSearchParams(h), qp = new URLSearchParams(q);
+document.getElementById("out").textContent = [
+  "hash 길이: " + h.length,
+  "hash r2 길이: " + (hp.get("r2") || "").length,
+  "hash tgWebAppData 있음: " + hp.has("tgWebAppData"),
+  "query 길이: " + q.length,
+  "query r2 길이: " + (qp.get("r2") || "").length,
+].join("\n");
+</script></body></html>
