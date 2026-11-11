@@ -10,12 +10,13 @@
     폰 등록: ?reg=1 (보조기능의 미니앱 키보드 버튼. 키보드 버튼 미니앱은 initData가 없어 텔레그램 안인지만 본다)
       비밀번호를 정하면 열쇠(P-256)를 만들고, 비밀 열쇠는 비밀번호로 잠가 텔레그램 보안 저장소(SecureStorage, 이 봇 전용)에 둔다.
       공개 열쇠(압축 33바이트, base64url 44자)는 sendData({"t": "map_reg", "k": 공개 열쇠})로 챗봇에 보낸다.
-    데이터: #r2=<base64url(일회용 공개 열쇠 65 | IV 12 | 암호문)>  (서버로 전송되지 않음, 읽은 뒤 주소에서 지움)
+    데이터: #r2=<base64url(일회용 공개 열쇠 65 | IV 12 | 암호문)>&x=<만료 epoch 초>  (서버로 전송되지 않음, 읽은 뒤 주소에서 지움)
+      x 가 지났으면 비밀번호를 묻지 않고 바로 404. x 는 AES-GCM 추가 인증 데이터로 묶여 있어 고치면 풀리지 않는다.
       비밀번호로 비밀 열쇠를 풀고 ECDH → HKDF-SHA256(info "route-map-v2") → AES-256-GCM 으로 푼 뒤 deflate-raw 를 푼다.
-      풀린 내용 = {"x": 만료 epoch 초(10분), "d": JSON}. 서버 쪽 잠그기는 apps/map_crypto.py 와 같이 바꾼다.
+      풀린 내용 = {"x": 만료 epoch 초(2시간, 링크의 x 와 같음), "d": JSON}. 서버 쪽 잠그기는 apps/map_crypto.py 와 같이 바꾼다.
       JSON = {"o": [위도, 경도, 이름] | null, "s": [[위도, 경도, 이름, 건수[A, J, S], 국사정보[8], 메모[], 업무[[국소명, 업무구분, 제목, 시작, 마감]]], ...]}
       o = 출발·복귀 지점(사무실), s = 방문 순서대로의 국소. 링크 한도로 팝업 내용을 못 넣은 국소는 5번째가 null.
-    풀린 데이터는 저장하지 않고, 지도를 연 지 60분이 지나면 화면과 함께 지운다(1분마다·화면 복귀·지도 조작 때 실제 시각으로 확인).
+    풀린 데이터는 저장하지 않고, 지도를 연 지 2시간이 지나면 화면과 함께 지운다(1분마다·화면 복귀·지도 조작 때 실제 시각으로 확인).
     경로 선: OSRM 공개 서버(도로 경로). 실패하면 직선거리·시속 40km로 대신 그린다.
     길찾기 연동(휴대폰에서 확인한 값): 출발·도착 포함 카카오맵 최대 7곳, T맵 최대 4곳(경유 2곳).
       카카오맵은 전부 넣는다(7곳에서 스스로 멈추고 7번째가 도착지).
@@ -579,7 +580,7 @@
           else stopWatch();
         };
         document.addEventListener("visibilitychange", onVisibility);
-        // 지도가 닫히면(60분 등) 모두 멈춘다.
+        // 지도가 닫히면(2시간 등) 모두 멈춘다.
         map.on("unload", () => {
           closed = true;
           started = false;
@@ -627,7 +628,7 @@
         return L.divIcon({ className: "", html: `<div class="route-map-pin ${className}">${tagHtml}${label}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
       }
 
-      // 풀린 데이터로만 지도를 그린다. 돌려주는 map은 60분 뒤 닫을 때 지운다.
+      // 풀린 데이터로만 지도를 그린다. 돌려주는 map은 2시간 뒤 닫을 때 지운다.
       function render(rawData) {
         if (typeof L === "undefined") {
           summary.textContent = "지도 라이브러리를 불러오지 못했습니다.";
@@ -791,7 +792,7 @@
       const tg = window.Telegram?.WebApp;
       const PBKDF2_ITERATIONS = 600000;
       const HKDF_INFO = new TextEncoder().encode("route-map-v2");
-      const OPEN_LIMIT_MS = 60 * 60 * 1000; // 연 지 60분이 지나면 데이터를 지우고 닫는다
+      const OPEN_LIMIT_MS = 2 * 60 * 60 * 1000; // 연 지 2시간이 지나면 데이터를 지우고 닫는다
       const PASSWORD_RULE = /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/;
       const gate = document.getElementById("gate");
       const gateForm = document.getElementById("gate-form");
@@ -903,7 +904,7 @@
       }
 
       // 링크 풀기. 비밀번호가 틀리면 "password", 링크가 깨졌으면 "link", 시간이 지났으면 "expired" 오류.
-      async function unlockRoute(device, password, sealedText) {
+      async function unlockRoute(device, password, sealedText, expiresAt) {
         let privateKey;
         try {
           const pkcs8 = await crypto.subtle.decrypt(
@@ -924,17 +925,19 @@
             { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: HKDF_INFO },
             hkdf, { name: "AES-GCM", length: 256 }, false, ["decrypt"],
           );
-          const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: sealed.slice(65, 77) }, key, sealed.slice(77));
+          const plain = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: sealed.slice(65, 77), additionalData: new TextEncoder().encode(String(expiresAt)) }, key, sealed.slice(77),
+          );
           const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
           body = JSON.parse(await new Response(stream).text());
         } catch (error) {
           throw new Error("link");
         }
-        if (!Number.isFinite(body?.x) || Date.now() / 1000 > body.x) throw new Error("expired");
+        if (body?.x !== expiresAt || Date.now() / 1000 > body.x) throw new Error("expired");
         return body.d;
       }
 
-      // 연 지 60분: 지도·데이터를 지우고 404 화면처럼 둔다(다시 보려면 텔레그램에서 새 링크).
+      // 연 지 2시간: 지도·데이터를 지우고 404 화면처럼 둔다(다시 보려면 텔레그램에서 새 링크).
       // 화면이 꺼지면 타이머가 멈출 수 있어 실제 시각으로 1분마다·화면 복귀 때·지도 조작 때 확인한다.
       function scheduleClose(map) {
         const openedAt = Date.now();
@@ -977,7 +980,7 @@
         };
       }
 
-      async function startUnlock(sealedText) {
+      async function startUnlock(sealedText, expiresAt) {
         const device = await loadDevice();
         if (!device) {
           showNotFound("device not registered");
@@ -991,7 +994,7 @@
           const password = gatePw.value;
           gatePw.value = "";
           try {
-            const data = await unlockRoute(device, password, sealedText);
+            const data = await unlockRoute(device, password, sealedText, expiresAt);
             gate.hidden = true;
             gateForm.onsubmit = null;
             scheduleClose(render(data));
@@ -1022,8 +1025,12 @@
         tg.ready();
         tg.expand();
         if (query.get("reg") === "1" || params.get("reg") === "1") startRegister();
-        else if (tg.initData && /^[A-Za-z0-9_-]{100,}$/.test(params.get("r2") || "")) startUnlock(params.get("r2"));
-        else showNotFound("bad link");
+        else if (tg.initData && /^[A-Za-z0-9_-]{100,}$/.test(params.get("r2") || "") && /^\d{10}$/.test(params.get("x") || "")) {
+          // 만료된 링크는 비밀번호를 묻지 않고 바로 404
+          const expiresAt = Number(params.get("x"));
+          if (Date.now() / 1000 > expiresAt) showNotFound("expired");
+          else startUnlock(params.get("r2"), expiresAt);
+        } else showNotFound("bad link");
       }
     })();
   </script>
