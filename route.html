@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Page not found · GitHub Pages</title>
   <!--
-    경로 지도 페이지. 받은 순서대로 번호 핀을 찍고 경로를 그린다.
-    등록 화면·비밀번호 화면 말고는(등록 안 된 폰, 잘못된·만료된 링크, 시간이 지나 닫힘) 404 화면처럼 보인다.
-    폰 등록: #reg=<등록번호 8> (뒤에 붙는 다른 값은 쓰지 않는다)
-      비밀번호를 정하면 이 브라우저에서 열쇠(P-256)를 만들고, 비밀 열쇠는 비밀번호로 잠가 이 브라우저에만 둔다.
-      공개 열쇠(압축 33바이트, base64url 44자)는 "/start m<등록번호><공개 열쇠>" 문구로 복사해 사용자가 챗봇 대화방에 보낸다.
+    경로 지도 페이지(텔레그램 미니앱). 받은 순서대로 번호 핀을 찍고 경로를 그린다.
+    미니앱으로 연 것이 아니면, 그리고 등록 화면·비밀번호 화면 말고는(등록 안 된 폰, 잘못된·만료된 링크, 시간이 지나 닫힘) 404 화면처럼 보인다.
+    폰 등록: #reg=1 (보조기능의 미니앱 키보드 버튼)
+      비밀번호를 정하면 열쇠(P-256)를 만들고, 비밀 열쇠는 비밀번호로 잠가 텔레그램 보안 저장소(SecureStorage, 이 봇 전용)에 둔다.
+      공개 열쇠(압축 33바이트, base64url 44자)는 sendData({"t": "map_reg", "k": 공개 열쇠})로 챗봇에 보낸다.
     데이터: #r2=<base64url(일회용 공개 열쇠 65 | IV 12 | 암호문)>  (서버로 전송되지 않음, 읽은 뒤 주소에서 지움)
       비밀번호로 비밀 열쇠를 풀고 ECDH → HKDF-SHA256(info "route-map-v2") → AES-256-GCM 으로 푼 뒤 deflate-raw 를 푼다.
       풀린 내용 = {"x": 만료 epoch 초(10분), "d": JSON}. 서버 쪽 잠그기는 apps/map_crypto.py 와 같이 바꾼다.
@@ -22,6 +22,8 @@
       T맵은 직접 잘라 넣는다: 국소가 다 들어가면 사무실로 복귀, 넘으면 연동 가능한 마지막 국소가 도착지.
     공개 저장소에도 그대로 올리는 파일이므로 내부 이름·주소를 적지 않는다.
   -->
+  <!-- 텔레그램 미니앱 기능(initData·SecureStorage·sendData). 주소의 # 를 읽어야 하므로 아래 페이지 스크립트보다 먼저 불러온다. -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -111,7 +113,6 @@
     .gate-title { margin: 0 0 8px; font-size: 16px; font-weight: 900; }
     .gate-text { margin: 0 0 14px; color: #4b587a; font-size: 13px; line-height: 1.5; white-space: pre-line; }
     .gate-input { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; padding: 11px 12px; border: 1px solid #cfd8e6; border-radius: 10px; font-size: 15px; }
-    .gate-code { font-family: monospace; font-size: 12px; word-break: break-all; background: #f8fafc; }
     .gate-btn { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 12px; border: 0; border-radius: 10px; background: #3f57d5; color: #fff; font-size: 15px; font-weight: 800; text-align: center; text-decoration: none; cursor: pointer; }
     .gate-box.is-register .gate-btn { background: #16a34a; }
     .gate-btn:disabled { opacity: .5; }
@@ -137,8 +138,6 @@
       <input id="gate-pw" class="gate-input" type="password" autocomplete="off" placeholder="비밀번호" hidden />
       <input id="gate-pw2" class="gate-input" type="password" autocomplete="off" placeholder="비밀번호 확인" hidden />
       <button id="gate-submit" class="gate-btn" type="submit" hidden></button>
-      <input id="gate-code" class="gate-input gate-code" type="text" readonly hidden />
-      <button id="gate-copy" class="gate-btn" type="button" hidden>복사</button>
       <p id="gate-error" class="gate-error"></p>
     </form>
   </div>
@@ -696,7 +695,10 @@
       }
 
       // ===== 잠금(폰 등록·비밀번호) =====
-      const DEVICE_STORE_KEY = "route-map-device-v1"; // 이 브라우저에 두는 것: 비밀번호로 잠근 비밀 열쇠와 공개 열쇠뿐
+      // 텔레그램 보안 저장소(이 봇 미니앱 전용)에 두는 것: 비밀번호로 잠근 비밀 열쇠와 공개 열쇠뿐
+      const DEVICE_STORE_KEY = "route_map_device_v2";
+      const SECURE_STORAGE_VERSION = "9.0"; // SecureStorage가 생긴 미니앱 버전
+      const tg = window.Telegram?.WebApp;
       const PBKDF2_ITERATIONS = 600000;
       const HKDF_INFO = new TextEncoder().encode("route-map-v2");
       const OPEN_LIMIT_MS = 60 * 60 * 1000; // 연 지 60분이 지나면 데이터를 지우고 닫는다
@@ -708,16 +710,9 @@
       const gatePw = document.getElementById("gate-pw");
       const gatePw2 = document.getElementById("gate-pw2");
       const gateSubmit = document.getElementById("gate-submit");
-      const gateCode = document.getElementById("gate-code");
-      const gateCopy = document.getElementById("gate-copy");
       const gateError = document.getElementById("gate-error");
       const notFound = document.getElementById("notfound");
       const NOT_FOUND_TITLE = "Page not found · GitHub Pages";
-      const REGISTER_DONE_TEXT = "마지막 단계입니다.\n"
-        + "1. [복사]를 누르면 텔레그램이 열립니다(안 열리면 직접 열어 주세요).\n"
-        + "2. 챗봇 대화방에 붙여넣어 보내 주세요.\n"
-        + "3. \"등록이 완료되었습니다\" 답이 오면 끝입니다.\n"
-        + "링크를 받은 뒤 10분 안에 보내야 합니다. 알림 봇이나 다른 대화방에 보내면 등록되지 않습니다.";
 
       function b64urlToBytes(text) {
         const base64 = text.replace(/-/g, "+").replace(/_/g, "/");
@@ -731,26 +726,25 @@
         return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
       }
 
-      // mode: "register"(비밀번호 2칸 + 등록), "unlock"(비밀번호 1칸 + 열기). 화면마다 색·제목이 다르다.
-      function showGate(mode) {
+      // mode: "register"(비밀번호 2칸 + 등록), "unlock"(비밀번호 1칸 + 열기), "message"(안내만). 화면마다 색·제목이 다르다.
+      function showGate(mode, message = "") {
         const register = mode === "register";
+        const input = mode !== "message";
         notFound.hidden = true;
         gate.hidden = false;
         gateForm.hidden = false;
         gateForm.classList.toggle("is-register", register);
         document.title = register ? "지도 폰 등록" : "경로 지도";
         gateTitle.textContent = register ? "📱 지도 폰 등록" : "🧭 경로 지도";
-        gateText.textContent = register
+        gateText.textContent = message || (register
           ? "이 폰에서 경로 지도를 열 때 쓸 비밀번호를 정해 주세요.\n영문과 숫자를 섞어 8자 이상.\n다시 등록하면 이전 폰에서는 열리지 않습니다."
-          : "폰 등록 때 정한 비밀번호를 넣어 주세요.";
+          : "폰 등록 때 정한 비밀번호를 넣어 주세요.");
         gateError.textContent = "";
-        gatePw.hidden = false;
+        gatePw.hidden = !input;
         gatePw2.hidden = !register;
-        gateSubmit.hidden = false;
+        gateSubmit.hidden = !input;
         gateSubmit.disabled = false;
         gateSubmit.textContent = register ? "등록" : "열기";
-        gateCode.hidden = true;
-        gateCopy.hidden = true;
         gatePw.value = "";
         gatePw2.value = "";
       }
@@ -768,14 +762,29 @@
         console.info("[ROUTE] not available", reason);
       }
 
+      // 텔레그램 보안 저장소 읽기. 없거나 읽지 못하면 null.
       function loadDevice() {
-        try {
-          const saved = JSON.parse(localStorage.getItem(DEVICE_STORE_KEY) || "null");
-          return saved && saved.pub && saved.salt && saved.iv && saved.wrapped ? saved : null;
-        } catch (error) {
-          console.warn("[ROUTE] device store read failed", error?.name || error);
-          return null;
-        }
+        return new Promise((resolve) => {
+          tg.SecureStorage.getItem(DEVICE_STORE_KEY, (error, value) => {
+            if (error) console.warn("[ROUTE] secure storage read failed", error);
+            try {
+              const saved = !error && value ? JSON.parse(value) : null;
+              resolve(saved && saved.pub && saved.salt && saved.iv && saved.wrapped ? saved : null);
+            } catch (parseError) {
+              console.warn("[ROUTE] secure storage value invalid", parseError?.name || parseError);
+              resolve(null);
+            }
+          });
+        });
+      }
+
+      function saveDevice(device) {
+        return new Promise((resolve, reject) => {
+          tg.SecureStorage.setItem(DEVICE_STORE_KEY, JSON.stringify(device), (error, stored) => {
+            if (error || !stored) reject(new Error(String(error || "not stored")));
+            else resolve();
+          });
+        });
       }
 
       async function passwordKey(password, salt) {
@@ -786,7 +795,7 @@
         );
       }
 
-      // 폰 등록: 열쇠를 만들고 비밀 열쇠는 비밀번호로 잠가 이 브라우저에만 둔다. 공개 열쇠(압축형)를 돌려준다.
+      // 폰 등록: 열쇠를 만들고 비밀 열쇠는 비밀번호로 잠가 텔레그램 보안 저장소에 둔다. 공개 열쇠(압축형)를 돌려준다.
       async function registerDevice(password) {
         const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
         const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)); // 04 | x | y
@@ -799,9 +808,7 @@
         const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await passwordKey(password, salt), pkcs8));
         pkcs8.fill(0);
         const pub = bytesToB64url(compressed);
-        localStorage.setItem(DEVICE_STORE_KEY, JSON.stringify({
-          pub, salt: bytesToB64url(salt), iv: bytesToB64url(iv), wrapped: bytesToB64url(wrapped),
-        }));
+        await saveDevice({ pub, salt: bytesToB64url(salt), iv: bytesToB64url(iv), wrapped: bytesToB64url(wrapped) });
         return pub;
       }
 
@@ -857,26 +864,8 @@
         if (map) map.on("click movestart zoomstart popupopen", checkLimit);
       }
 
-      // 등록 문구 복사 → 텔레그램 앱 열기(챗봇 이름은 쓰지 않는다). 복사가 막히면 문구를 길게 눌러 복사하게 한다.
-      async function copyRegisterCode() {
-        let copied = false;
-        try {
-          await navigator.clipboard.writeText(gateCode.value);
-          copied = true;
-        } catch (error) {
-          gateCode.select();
-          copied = document.execCommand("copy");
-          console.warn("[ROUTE] clipboard api failed; fallback copy", copied);
-        }
-        if (!copied) {
-          gateError.textContent = "복사하지 못했습니다. 위 문구를 길게 눌러 복사해 주세요.";
-          return;
-        }
-        gateError.textContent = "복사했습니다.";
-        window.location.href = "tg://";
-      }
-
-      function startRegister(token) {
+      // 등록 화면: 보조기능의 미니앱 키보드 버튼으로 열린다. 공개 열쇠는 sendData로 챗봇에 보내고 미니앱은 닫힌다.
+      function startRegister() {
         showGate("register");
         gateForm.onsubmit = async (event) => {
           event.preventDefault();
@@ -888,23 +877,18 @@
           try {
             const pub = await registerDevice(password);
             gatePw.value = ""; gatePw2.value = "";
-            gatePw.hidden = true; gatePw2.hidden = true; gateSubmit.hidden = true;
-            gateForm.onsubmit = (doneEvent) => doneEvent.preventDefault();
-            gateText.textContent = REGISTER_DONE_TEXT;
-            gateCode.value = `/start m${token}${pub}`;
-            gateCode.hidden = false;
-            gateCopy.hidden = false;
             console.info("[ROUTE] device key created");
+            tg.sendData(JSON.stringify({ t: "map_reg", k: pub }));
           } catch (error) {
-            console.error("[ROUTE] device register failed", error?.name || error);
+            console.error("[ROUTE] device register failed", error?.message || error?.name || error);
             gateSubmit.disabled = false;
-            gateError.textContent = "이 브라우저에서 등록하지 못했습니다. 크롬(Chrome)으로 열어 주세요.";
+            gateError.textContent = "등록하지 못했습니다. 텔레그램을 최신으로 업데이트한 뒤 다시 해 주세요.";
           }
         };
       }
 
-      function startUnlock(sealedText) {
-        const device = loadDevice();
+      async function startUnlock(sealedText) {
+        const device = await loadDevice();
         if (!device) {
           showNotFound("device not registered");
           return;
@@ -932,19 +916,22 @@
         };
       }
 
-      // 주소의 # 뒤(데이터·등록번호)는 읽은 즉시 주소창·방문 기록에서 지운다.
+      // 주소의 # 뒤(데이터·등록 표시)는 읽은 즉시 주소창·방문 기록에서 지운다(텔레그램 스크립트는 위에서 먼저 읽음).
       const hash = window.location.hash.replace(/^#/, "");
       history.replaceState(null, "", window.location.pathname + window.location.search);
       const params = new URLSearchParams(hash);
-      gateCopy.addEventListener("click", copyRegisterCode);
-      if (!window.crypto?.subtle || typeof DecompressionStream === "undefined") {
-        showNotFound("browser unsupported");
-      } else if (/^[A-Za-z0-9_-]{8}$/.test(params.get("reg") || "")) {
-        startRegister(params.get("reg"));
-      } else if (/^[A-Za-z0-9_-]{100,}$/.test(params.get("r2") || "")) {
-        startUnlock(params.get("r2"));
+      if (!tg?.initData) {
+        // 텔레그램 미니앱으로 연 것이 아니면 아무것도 하지 않는다.
+        showNotFound("not mini app");
+      } else if (!window.crypto?.subtle || typeof DecompressionStream === "undefined" || !tg.isVersionAtLeast(SECURE_STORAGE_VERSION)) {
+        tg.ready();
+        showGate("message", "이 텔레그램에서는 열 수 없습니다.\n텔레그램을 최신으로 업데이트한 뒤 다시 열어 주세요.");
       } else {
-        showNotFound("bad link");
+        tg.ready();
+        tg.expand();
+        if (params.get("reg") === "1") startRegister();
+        else if (/^[A-Za-z0-9_-]{100,}$/.test(params.get("r2") || "")) startUnlock(params.get("r2"));
+        else showNotFound("bad link");
       }
     })();
   </script>
