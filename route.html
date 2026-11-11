@@ -6,9 +6,15 @@
   <title>경로 지도</title>
   <!--
     경로 지도 페이지. 받은 순서대로 번호 핀을 찍고 경로를 그린다.
-    데이터: #r1=<base64url(JSON)>  (서버로 전송되지 않음)
+    폰 등록: #reg=<등록번호 8>&bot=<봇 이름>
+      비밀번호를 정하면 이 브라우저에서 열쇠(P-256)를 만들고, 비밀 열쇠는 비밀번호로 잠가 이 브라우저에만 둔다.
+      공개 열쇠(압축 33바이트, base64url 44자)는 t.me/<봇>?start=m<등록번호><공개 열쇠> 로 챗봇에 등록한다.
+    데이터: #r2=<base64url(일회용 공개 열쇠 65 | IV 12 | 암호문)>  (서버로 전송되지 않음, 읽은 뒤 주소에서 지움)
+      비밀번호로 비밀 열쇠를 풀고 ECDH → HKDF-SHA256(info "route-map-v2") → AES-256-GCM 으로 푼 뒤 deflate-raw 를 푼다.
+      풀린 내용 = {"x": 만료 epoch 초(10분), "d": JSON}. 서버 쪽 잠그기는 apps/map_crypto.py 와 같이 바꾼다.
       JSON = {"o": [위도, 경도, 이름] | null, "s": [[위도, 경도, 이름, 건수[A, J, S], 국사정보[8], 메모[], 업무[[국소명, 업무구분, 제목, 시작, 마감]]], ...]}
       o = 출발·복귀 지점(사무실), s = 방문 순서대로의 국소. 링크 한도로 팝업 내용을 못 넣은 국소는 5번째가 null.
+    풀린 데이터는 저장하지 않고, 지도를 연 지 120분이 지나면 화면과 함께 지운다.
     경로 선: OSRM 공개 서버(도로 경로). 실패하면 직선거리·시속 40km로 대신 그린다.
     길찾기 연동(휴대폰에서 확인한 값): 출발·도착 포함 카카오맵 최대 7곳, T맵 최대 4곳(경유 2곳).
       카카오맵은 전부 넣는다(7곳에서 스스로 멈추고 7번째가 도착지).
@@ -95,9 +101,30 @@
     .work-marker-popup-button.is-kakao { background: #fee500; color: #191919 !important; }
     .work-marker-popup-button.is-roadview { background: #334155; color: #fff !important; }
     .work-marker-memo-status { flex: 0 0 auto; border-radius: 999px; padding: 5px 14px; font-size: 10.5px; font-weight: 900; color: #92400e; background: #fef3c7; }
+    /* 잠금 화면(폰 등록·비밀번호). 풀리기 전에는 지도를 그리지 않는다. */
+    #gate { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 16px; background: #f5f7fb; }
+    #gate[hidden] { display: none; }
+    .gate-box { width: 100%; max-width: 360px; box-sizing: border-box; padding: 20px 18px; border-radius: 14px; background: #fff; box-shadow: 0 6px 24px rgba(15,23,42,.12); color: #1f2a44; }
+    .gate-title { margin: 0 0 8px; font-size: 16px; font-weight: 900; }
+    .gate-text { margin: 0 0 14px; color: #4b587a; font-size: 13px; line-height: 1.5; white-space: pre-line; }
+    .gate-input { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; padding: 11px 12px; border: 1px solid #cfd8e6; border-radius: 10px; font-size: 15px; }
+    .gate-btn { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 12px; border: 0; border-radius: 10px; background: #3f57d5; color: #fff; font-size: 15px; font-weight: 800; text-align: center; text-decoration: none; cursor: pointer; }
+    .gate-btn:disabled { opacity: .5; }
+    .gate-error { min-height: 18px; margin: 6px 0 0; color: #b42318; font-size: 12.5px; font-weight: 700; white-space: pre-line; }
   </style>
 </head>
 <body>
+  <div id="gate">
+    <form id="gate-form" class="gate-box" autocomplete="off">
+      <h1 id="gate-title" class="gate-title">경로 지도</h1>
+      <p id="gate-text" class="gate-text">확인 중…</p>
+      <input id="gate-pw" class="gate-input" type="password" autocomplete="off" placeholder="비밀번호" hidden />
+      <input id="gate-pw2" class="gate-input" type="password" autocomplete="off" placeholder="비밀번호 확인" hidden />
+      <button id="gate-submit" class="gate-btn" type="submit" hidden>확인</button>
+      <a id="gate-link" class="gate-btn" rel="noopener noreferrer" hidden>텔레그램으로 돌아가 등록 완료</a>
+      <p id="gate-error" class="gate-error"></p>
+    </form>
+  </div>
   <div id="map"><div id="summary">경로를 불러오는 중…</div></div>
   <div id="panel">
     <div id="panel-handle" role="button" aria-label="전체 경로 버튼 다시 보기"><span></span></div>
@@ -140,15 +167,10 @@
         return { lat, lon, name: textOf(row[2]) || `${lat.toFixed(5)}, ${lon.toFixed(5)}` };
       }
 
-      // #r1=base64url(JSON). 형식이 틀리면 null.
-      function parseData(hash) {
-        const body = hash.replace(/^#/, "");
-        if (!body.startsWith("r1=")) return null;
+      // 풀린 지도 데이터 {"o", "s"} 확인. 형식이 틀리면 null.
+      function parseData(data) {
         try {
-          const base64 = body.slice(3).replace(/-/g, "+").replace(/_/g, "/");
-          const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
-          const data = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0))));
-          const stops = (Array.isArray(data.s) ? data.s : []).map((row) => {
+          const stops = (Array.isArray(data?.s) ? data.s : []).map((row) => {
             const point = validPoint(row);
             if (!point) return null;
             const list = (value) => (Array.isArray(value) ? value : []);
@@ -161,7 +183,7 @@
           }).filter(Boolean);
           return { office: validPoint(data.o), stops };
         } catch (error) {
-          console.error("[ROUTE] data parse failed", error);
+          console.error("[ROUTE] data parse failed", error?.name || error);
           return null;
         }
       }
@@ -499,10 +521,11 @@
         return L.divIcon({ className: "", html: `<div class="route-map-pin ${className}">${tagHtml}${label}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
       }
 
-      function render() {
+      // 풀린 데이터로만 지도를 그린다. 돌려주는 map은 120분 뒤 닫을 때 지운다.
+      function render(rawData) {
         if (typeof L === "undefined") {
           summary.textContent = "지도 라이브러리를 불러오지 못했습니다.";
-          return;
+          return null;
         }
         const map = L.map("map", { zoomControl: true }).setView([37.5665, 126.978], 11);
         const normalLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -537,12 +560,12 @@
         });
         map.addControl(new LayerSwitcher());
 
-        const data = parseData(window.location.hash);
+        const data = parseData(rawData);
         if (!data || !data.stops.length) {
           summary.textContent = "표시할 경로가 없습니다.";
           setLink(kakaoButton, ""); setLink(tmapButton, "");
           navButton.disabled = true;
-          return;
+          return map;
         }
         const { office, stops } = data;
         const selected = stops.map(() => true);
@@ -652,9 +675,205 @@
           }
           console.info("[ROUTE] route drawn", { stops: stops.length, fallback: route.fallback });
         });
+        return map;
       }
 
-      render();
+      // ===== 잠금(폰 등록·비밀번호) =====
+      const DEVICE_STORE_KEY = "route-map-device-v1"; // 이 브라우저에 두는 것: 비밀번호로 잠근 비밀 열쇠와 공개 열쇠뿐
+      const PBKDF2_ITERATIONS = 600000;
+      const HKDF_INFO = new TextEncoder().encode("route-map-v2");
+      const OPEN_LIMIT_MS = 120 * 60 * 1000; // 연 지 120분이 지나면 데이터를 지우고 닫는다
+      const PASSWORD_RULE = /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/;
+      const gate = document.getElementById("gate");
+      const gateForm = document.getElementById("gate-form");
+      const gateTitle = document.getElementById("gate-title");
+      const gateText = document.getElementById("gate-text");
+      const gatePw = document.getElementById("gate-pw");
+      const gatePw2 = document.getElementById("gate-pw2");
+      const gateSubmit = document.getElementById("gate-submit");
+      const gateLink = document.getElementById("gate-link");
+      const gateError = document.getElementById("gate-error");
+
+      function b64urlToBytes(text) {
+        const base64 = text.replace(/-/g, "+").replace(/_/g, "/");
+        const binary = atob(base64 + "=".repeat((4 - (base64.length % 4)) % 4));
+        return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+      }
+
+      function bytesToB64url(bytes) {
+        let binary = "";
+        bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      }
+
+      function showGate(title, text, mode) {
+        gate.hidden = false;
+        gateTitle.textContent = title;
+        gateText.textContent = text;
+        gateError.textContent = "";
+        gatePw.hidden = mode !== "unlock" && mode !== "register";
+        gatePw2.hidden = mode !== "register";
+        gateSubmit.hidden = gatePw.hidden;
+        gateSubmit.disabled = false;
+        gateSubmit.textContent = mode === "register" ? "등록" : "열기";
+        gateLink.hidden = true;
+        gatePw.value = "";
+        gatePw2.value = "";
+      }
+
+      function loadDevice() {
+        try {
+          const saved = JSON.parse(localStorage.getItem(DEVICE_STORE_KEY) || "null");
+          return saved && saved.pub && saved.salt && saved.iv && saved.wrapped ? saved : null;
+        } catch (error) {
+          console.warn("[ROUTE] device store read failed", error?.name || error);
+          return null;
+        }
+      }
+
+      async function passwordKey(password, salt) {
+        const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+        return crypto.subtle.deriveKey(
+          { name: "PBKDF2", hash: "SHA-256", salt, iterations: PBKDF2_ITERATIONS },
+          base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"],
+        );
+      }
+
+      // 폰 등록: 열쇠를 만들고 비밀 열쇠는 비밀번호로 잠가 이 브라우저에만 둔다. 공개 열쇠(압축형)를 돌려준다.
+      async function registerDevice(password) {
+        const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+        const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)); // 04 | x | y
+        const compressed = new Uint8Array(33);
+        compressed[0] = raw[64] & 1 ? 3 : 2;
+        compressed.set(raw.slice(1, 33), 1);
+        const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+        const salt = crypto.getRandomValues(new Uint8Array(16));
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await passwordKey(password, salt), pkcs8));
+        pkcs8.fill(0);
+        const pub = bytesToB64url(compressed);
+        localStorage.setItem(DEVICE_STORE_KEY, JSON.stringify({
+          pub, salt: bytesToB64url(salt), iv: bytesToB64url(iv), wrapped: bytesToB64url(wrapped),
+        }));
+        return pub;
+      }
+
+      // 링크 풀기. 비밀번호가 틀리면 "password", 링크가 깨졌으면 "link", 시간이 지났으면 "expired" 오류.
+      async function unlockRoute(device, password, sealedText) {
+        let privateKey;
+        try {
+          const pkcs8 = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: b64urlToBytes(device.iv) },
+            await passwordKey(password, b64urlToBytes(device.salt)), b64urlToBytes(device.wrapped),
+          );
+          privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+        } catch (error) {
+          throw new Error("password");
+        }
+        let body;
+        try {
+          const sealed = b64urlToBytes(sealedText);
+          const ephemeral = await crypto.subtle.importKey("raw", sealed.slice(0, 65), { name: "ECDH", namedCurve: "P-256" }, false, []);
+          const shared = await crypto.subtle.deriveBits({ name: "ECDH", public: ephemeral }, privateKey, 256);
+          const hkdf = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+          const key = await crypto.subtle.deriveKey(
+            { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: HKDF_INFO },
+            hkdf, { name: "AES-GCM", length: 256 }, false, ["decrypt"],
+          );
+          const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: sealed.slice(65, 77) }, key, sealed.slice(77));
+          const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+          body = JSON.parse(await new Response(stream).text());
+        } catch (error) {
+          throw new Error("link");
+        }
+        if (!Number.isFinite(body?.x) || Date.now() / 1000 > body.x) throw new Error("expired");
+        return body.d;
+      }
+
+      // 연 지 120분: 지도·데이터를 지우고 안내만 남긴다(다시 보려면 텔레그램에서 새 링크).
+      function scheduleClose(map) {
+        setTimeout(() => {
+          if (map) map.remove();
+          document.getElementById("map").replaceChildren();
+          document.getElementById("panel").replaceChildren();
+          showGate("경로 지도", "연 지 120분이 지나 화면을 닫았습니다.\n텔레그램에서 [🧭 경로 지도]를 다시 눌러 주세요.", "message");
+          console.info("[ROUTE] closed after time limit");
+        }, OPEN_LIMIT_MS);
+      }
+
+      function startRegister(token, bot) {
+        showGate("지도 폰 등록", "이 폰에서 경로 지도를 열 때 쓸 비밀번호를 정해 주세요.\n영문과 숫자를 섞어 8자 이상.\n다시 등록하면 이전 폰에서는 열리지 않습니다.", "register");
+        gateForm.onsubmit = async (event) => {
+          event.preventDefault();
+          const password = gatePw.value;
+          if (!PASSWORD_RULE.test(password)) { gateError.textContent = "영문과 숫자를 섞어 8자 이상으로 정해 주세요."; return; }
+          if (password !== gatePw2.value) { gateError.textContent = "비밀번호 확인이 다릅니다."; return; }
+          gateSubmit.disabled = true;
+          gateError.textContent = "";
+          try {
+            const pub = await registerDevice(password);
+            gatePw.value = ""; gatePw2.value = "";
+            gatePw.hidden = true; gatePw2.hidden = true; gateSubmit.hidden = true;
+            gateText.textContent = "마지막 단계입니다.\n아래 버튼을 눌러 텔레그램으로 돌아가면 등록이 끝납니다.";
+            gateLink.href = `https://t.me/${bot}?start=m${token}${pub}`;
+            gateLink.hidden = false;
+            console.info("[ROUTE] device key created");
+          } catch (error) {
+            console.error("[ROUTE] device register failed", error?.name || error);
+            gateSubmit.disabled = false;
+            gateError.textContent = "이 브라우저에서 등록하지 못했습니다. 크롬(Chrome)으로 열어 주세요.";
+          }
+        };
+      }
+
+      function startUnlock(sealedText) {
+        const device = loadDevice();
+        if (!device) {
+          showGate("경로 지도", "이 폰(브라우저)은 등록되지 않았습니다.\n텔레그램 🔧 보조기능 > [📱 지도 폰 등록]을 이 폰에서 먼저 해 주세요.\n등록 때 쓴 브라우저로 열어야 합니다.", "message");
+          return;
+        }
+        showGate("경로 지도", "폰 등록 때 정한 비밀번호를 넣어 주세요.", "unlock");
+        gateForm.onsubmit = async (event) => {
+          event.preventDefault();
+          gateSubmit.disabled = true;
+          gateError.textContent = "";
+          const password = gatePw.value;
+          gatePw.value = "";
+          try {
+            const data = await unlockRoute(device, password, sealedText);
+            gate.hidden = true;
+            gateForm.onsubmit = null;
+            scheduleClose(render(data));
+            console.info("[ROUTE] unlocked");
+          } catch (error) {
+            gateSubmit.disabled = false;
+            const reason = error?.message;
+            if (reason === "password") {
+              gateError.textContent = "비밀번호가 틀렸습니다.";
+            } else {
+              gateForm.onsubmit = null;
+              showGate("경로 지도", reason === "expired"
+                ? "링크 시간(10분)이 지났습니다.\n텔레그램에서 [🧭 경로 지도]를 다시 눌러 주세요."
+                : "열 수 없는 링크입니다.\n이 폰으로 등록했는지 확인하고, 텔레그램에서 [🧭 경로 지도]를 다시 눌러 주세요.", "message");
+            }
+            console.warn("[ROUTE] unlock failed", reason);
+          }
+        };
+      }
+
+      // 주소의 # 뒤(데이터·등록번호)는 읽은 즉시 주소창·방문 기록에서 지운다.
+      const hash = window.location.hash.replace(/^#/, "");
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+      const params = new URLSearchParams(hash);
+      if (!window.crypto?.subtle || typeof DecompressionStream === "undefined") {
+        showGate("경로 지도", "이 브라우저에서는 열 수 없습니다. 크롬(Chrome)으로 열어 주세요.", "message");
+      } else if (/^[A-Za-z0-9_-]{8}$/.test(params.get("reg") || "") && /^[A-Za-z0-9_]{5,32}$/.test(params.get("bot") || "")) {
+        startRegister(params.get("reg"), params.get("bot"));
+      } else if (/^[A-Za-z0-9_-]{100,}$/.test(params.get("r2") || "")) {
+        startUnlock(params.get("r2"));
+      } else {
+        showGate("경로 지도", "열 수 없는 링크입니다.\n텔레그램에서 [🧭 경로 지도]를 다시 눌러 주세요.", "message");
+      }
     })();
   </script>
 </body>
