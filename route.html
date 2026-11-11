@@ -7,7 +7,7 @@
   <!--
     경로 지도 페이지(텔레그램 미니앱). 받은 순서대로 번호 핀을 찍고 경로를 그린다.
     미니앱으로 연 것이 아니면, 그리고 등록 화면·비밀번호 화면 말고는(등록 안 된 폰, 잘못된·만료된 링크, 시간이 지나 닫힘) 404 화면처럼 보인다.
-    폰 등록: #reg=1 (보조기능의 미니앱 키보드 버튼)
+    폰 등록: ?reg=1 (보조기능의 미니앱 키보드 버튼. 키보드 버튼 미니앱은 initData가 없어 텔레그램 안인지만 본다)
       비밀번호를 정하면 열쇠(P-256)를 만들고, 비밀 열쇠는 비밀번호로 잠가 텔레그램 보안 저장소(SecureStorage, 이 봇 전용)에 둔다.
       공개 열쇠(압축 33바이트, base64url 44자)는 sendData({"t": "map_reg", "k": 공개 열쇠})로 챗봇에 보낸다.
     데이터: #r2=<base64url(일회용 공개 열쇠 65 | IV 12 | 암호문)>  (서버로 전송되지 않음, 읽은 뒤 주소에서 지움)
@@ -920,7 +920,9 @@
       const hash = window.location.hash.replace(/^#/, "");
       history.replaceState(null, "", window.location.pathname + window.location.search);
       const params = new URLSearchParams(hash);
-      if (!tg?.initData) {
+      const query = new URLSearchParams(window.location.search);
+      // 텔레그램 안에서 연 미니앱인지: 키보드 버튼 미니앱은 initData가 비어 있으므로 platform으로 본다(브라우저는 "unknown").
+      if (!tg || !tg.platform || tg.platform === "unknown") {
         // 텔레그램 미니앱으로 연 것이 아니면 아무것도 하지 않는다.
         showNotFound("not mini app");
       } else if (!window.crypto?.subtle || typeof DecompressionStream === "undefined" || !tg.isVersionAtLeast(SECURE_STORAGE_VERSION)) {
@@ -929,8 +931,8 @@
       } else {
         tg.ready();
         tg.expand();
-        if (params.get("reg") === "1") startRegister();
-        else if (/^[A-Za-z0-9_-]{100,}$/.test(params.get("r2") || "")) startUnlock(params.get("r2"));
+        if (query.get("reg") === "1" || params.get("reg") === "1") startRegister();
+        else if (tg.initData && /^[A-Za-z0-9_-]{100,}$/.test(params.get("r2") || "")) startUnlock(params.get("r2"));
         else showNotFound("bad link");
       }
     })();
