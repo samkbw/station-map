@@ -15,7 +15,7 @@
       풀린 내용 = {"x": 만료 epoch 초(10분), "d": JSON}. 서버 쪽 잠그기는 apps/map_crypto.py 와 같이 바꾼다.
       JSON = {"o": [위도, 경도, 이름] | null, "s": [[위도, 경도, 이름, 건수[A, J, S], 국사정보[8], 메모[], 업무[[국소명, 업무구분, 제목, 시작, 마감]]], ...]}
       o = 출발·복귀 지점(사무실), s = 방문 순서대로의 국소. 링크 한도로 팝업 내용을 못 넣은 국소는 5번째가 null.
-    풀린 데이터는 저장하지 않고, 지도를 연 지 60분이 지나면 화면과 함께 지운다.
+    풀린 데이터는 저장하지 않고, 지도를 연 지 60분이 지나면 화면과 함께 지운다(1분마다·화면 복귀·지도 조작 때 실제 시각으로 확인).
     경로 선: OSRM 공개 서버(도로 경로). 실패하면 직선거리·시속 40km로 대신 그린다.
     길찾기 연동(휴대폰에서 확인한 값): 출발·도착 포함 카카오맵 최대 7곳, T맵 최대 4곳(경유 2곳).
       카카오맵은 전부 넣는다(7곳에서 스스로 멈추고 7번째가 도착지).
@@ -838,13 +838,23 @@
       }
 
       // 연 지 60분: 지도·데이터를 지우고 404 화면처럼 둔다(다시 보려면 텔레그램에서 새 링크).
+      // 화면이 꺼지면 타이머가 멈출 수 있어 실제 시각으로 1분마다·화면 복귀 때·지도 조작 때 확인한다.
       function scheduleClose(map) {
-        setTimeout(() => {
+        const openedAt = Date.now();
+        let timer = null;
+        const checkLimit = () => {
+          if (Date.now() - openedAt < OPEN_LIMIT_MS) return;
+          clearInterval(timer);
+          document.removeEventListener("visibilitychange", onVisible);
           if (map) map.remove();
           document.getElementById("map").replaceChildren();
           document.getElementById("panel").replaceChildren();
           showNotFound("closed after time limit");
-        }, OPEN_LIMIT_MS);
+        };
+        const onVisible = () => { if (document.visibilityState === "visible") checkLimit(); };
+        timer = setInterval(checkLimit, 60 * 1000);
+        document.addEventListener("visibilitychange", onVisible);
+        if (map) map.on("click movestart zoomstart popupopen", checkLimit);
       }
 
       // 등록 문구 복사 → 텔레그램 앱 열기(챗봇 이름은 쓰지 않는다). 복사가 막히면 문구를 길게 눌러 복사하게 한다.
